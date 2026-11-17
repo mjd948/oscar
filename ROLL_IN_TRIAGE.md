@@ -130,7 +130,7 @@ Tracks: **R** = reliability, **M** = mobile, **W** = widget dashboard.
 | d65ff31 7652f07 33835eb (OCR chips, Vehicle ID column) | upstream | ORNL `VehicleIdOcr`, `useVehicleOcrMap`, Vehicle ID column |
 | ba9c93c c47e4ad (serve-proxy) | **dropped** | not needed on 3.11: ORNL's gateway already serves the viewer same-origin with session login, which is what the proxy faked |
 | a4603b1 94f4255 (e2e specs) | replaced for now | the scratch run used Playwright scripts against the gateway (see the scratch-verification section); cypress e2e specs return with the widget dashboard |
-| widget dashboard stack | phase 3 | not started |
+| widget dashboard stack | **re-hosted as custom pages** (`rollin/widget-dashboard`) | see the widget dashboard section below |
 
 ## Scratch verification (2026-11-17)
 
@@ -167,4 +167,31 @@ box, an RS-350 walker and a D5 walker. Scripts and how-to are in `tools/scratch-
 - **10 s hard wait for the Bucket Service.** `OSCARServiceModule.doInit` waits 10 s for the bucket service; on a loaded host it took 11 s. The OSCAR service then failed for good and the container stayed unhealthy (no readiness marker) until restarted. Seen once in about six boots.
 - **RS-350 WebID attach race.** `RS350Sensor.doStart` can run before the OSCAR service has its WebID handler: `Could not attach WebID Analysis to RS350` (NPE). That walker then runs without WebID until restarted.
 - **Portal RPMs give up after ~2 minutes.** `LaneSystem` sets `commSettings.connection.reconnectAttempts = 10` for every RPM type it builds (Rapiscan, Aspect, RS-350, D5 config paths). `RobustConnection` then throws "Maximum number of connection attempts reached" and the RPM module stays in ERROR until restarted by hand. A switch reboot or a cable pull longer than ~2 min takes a portal lane down for good. The live 3.5 node likely has the same default; not yet compared. **Fixed on our branch:** a per-lane `RpmRecoverySupervisor` restarts an auto-start RPM member that is LOADED/STOPPED *with an error* (30 s → 5 min backoff); an operator-stopped member has no error and is left alone.
+
+## Widget dashboard on 3.11: custom pages (branch `rollin/widget-dashboard`)
+
+Decision (2026-11-17): ORNL's Dashboard, Events, Status of Health, Map, National, Lane View and
+the rest stay exactly as ORNL ships them. The grid framework (`PageHost`, react-grid-layout pinned
+to `~1.5.4`, add/arrange/resize widgets, page settings, import/export) comes back as user-built
+pages at `/custom-page/?id=`, listed under ORNL's menu with an "Add page" entry. A custom page's
+title and edit controls render in the app bar; the app bar also carries the new logo. Turkmen was
+not carried.
+
+| piece | what it is now |
+|---|---|
+| seeded pages | **templates**: Add page → "Dashboard / Lane View / Map / National / Events layout". A page remembers its template, so "Reset page to default" rebuilds it. Schema v3 turns any legacy seeded page (old export files) into an ordinary custom page. Nothing is seeded, so ORNL's routes are never shadowed |
+| lane status | ORNL dashboard `LaneStatus` (health snapshot, liveness), with additive `laneNames` / `hideTitle` props |
+| event / alarm table | ORNL `EventTable` (its filters, saved queries, bulk + inline adjudication). Additive `columnSettings` / `onColumnSettingsChange` / `fillHeight` props persist visibility, order and width per widget; the widget scopes the table by passing a lane-filtered lane map. Our old adjudication dialog and status/date filters are gone (ORNL's table has its own) |
+| quick view, map | ORNL `QuickView` / `MapComponent`; the map got additive `containerId` / `height` props so two maps can share a page |
+| lane status detail, chart, video, lane log | ORNL lane-view `LaneStatus`, `ChartLane`, `VideoMedia`, `EventTable lanelog` / `StatusTable`, fed by a new `useLaneDataSources` hook that collects a lane's streams the way ORNL's lane-view page does and holds ref-counted connection leases. One chart per lane: ORNL's chart draws both channels, and two on one lane do not both get data |
+| national | renders ORNL's national-view page component (its queries live in the page) |
+| Alarm Stats | ported; `LaneStreamRegistry` reduced to handler bundles over ORNL's `acquireSharedConnection` leases + `removeRealtimeEventSubscription` (the old never-disconnect channel table was the pre-3.11 workaround for osh-js lacking both) |
+| dropped | `LaneStatusSlice`/reconciliation (ORNL's `useLaneHealth` replaces it), `useHlsStream` (ORNL viewer leases), the old map/video/chart/national config forms (ORNL's components own those options) |
+
+Not carried / known limits: custom pages do not drive the dashboard alarm sound (ORNL's dashboard
+does); Greek has English text for the 99 new framework strings; the map widget has no lane filter.
+
+Verified on the scratch stack: `check-custom-pages.mjs` and `check-column-prefs.mjs` all pass
+(ORNL dashboard untouched; both templates render every widget; persistence across reload; two maps
+on a page; video plays and charts draw for the page lane; no page errors).
 

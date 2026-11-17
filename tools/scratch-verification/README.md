@@ -53,6 +53,8 @@ All read the admin password from `PW_FILE`; `OSCAR_BASE` defaults to `https://os
 | `check-map.mjs` | `SHOT` | walker markers present and moving, alarm markers present, the map does not re-centre |
 | `check-alarm-clear.mjs` | `OBS`, `CS` | the alarm popup links to the event, and a Code 9 adjudication clears the marker |
 | `check-video.mjs` | `CPID` (oscar container PID), `LANE`, `RTSP_PORT` | live HLS plays, survives a 45 s RTSP cut in the container's netns, and resumes unattended |
+| `check-custom-pages.mjs` | - | ORNL's dashboard untouched; custom pages from the Dashboard and Lane View templates render every widget, persist across reload, two maps share a page, video/chart follow the page lane |
+| `check-column-prefs.mjs` | - | an event-table widget's hidden column and dragged width survive a reload, and do not leak into ORNL's `/event-log` |
 
 ORNL's own `tools/test-live-deployment-regression.sh` is CI-only: it stops apache/nginx and
 deletes `/opt/oscar-ci-regression` on exit. Its Step-3 checks (gateway, ConSys auth, viewer
