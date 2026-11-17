@@ -1,18 +1,18 @@
 [submodule "include/osh-oakridge-modules"]
 	path = include/osh-oakridge-modules
-	url = https://github.com/ORNL/osh-oakridge-modules.git
-	branch = main
+	url = https://github.com/mjd948/osh-oakridge-modules.git
+	branch = ornl-3.11-rollin
 [submodule "include/osh-core"]
 	path = include/osh-core
-	url = https://github.com/ORNL/osh-core.git
-	branch = OSCAR
+	url = https://github.com/mjd948/osh-core.git
+	branch = ornl-3.11-rollin
 [submodule "include/osh-addons"]
 	path = include/osh-addons
 	url = https://github.com/ORNL/osh-addons.git
 	branch = OSCAR
 [submodule "web/oscar-viewer"]
 	path = web/oscar-viewer
-	url = https://github.com/ORNL/oscar-viewer.git
+	url = https://github.com/mjd948/oscar-viewer.git
 	branch = main
 [submodule "docs/video-guides"]
 	path = docs/video-guides

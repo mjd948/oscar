@@ -49,3 +49,7 @@ dist/release/installers/**/*.deb
 EML-VM250*
 eml-vm250*
 eml-plugin/
+
+# local editor and Claude Code state
+.vscode/
+.claude/
