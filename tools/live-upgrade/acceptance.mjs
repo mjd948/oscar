@@ -2,7 +2,7 @@
 // the dashboard, opens each portal lane's live video and the map. It adjudicates nothing.
 //   OSCAR_BASE=https://<host> PW_FILE=<admin pw file> LANES="Marshall,AFM Gate,Selfridge,Memorial Ave" MOBILE="Patrol 1" node acceptance.mjs
 // Run from a directory with playwright installed, next to ../scratch-verification/harness.mjs.
-import { open, sleep, laneStates, BASE } from './harness.mjs';
+import { open, sleep, laneStates, BASE } from '../scratch-verification/harness.mjs';
 const portal = (process.env.LANES ?? 'Marshall,AFM Gate,Selfridge,Memorial Ave').split(',');
 const mobile = (process.env.MOBILE ?? 'Patrol 1').split(',').filter(Boolean);
 const { browser, page, errors } = await open();

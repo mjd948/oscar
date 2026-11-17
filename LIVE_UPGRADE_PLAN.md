@@ -1,7 +1,7 @@
 # Live node upgrade: OSCAR 3.5.0 → 3.11 (our `ornl-3.11-rollin` build)
 
-Drafted 2026-11-17 and rehearsed the same day on this host (see "Rehearsal results" at the end).
-Nothing in this plan has been executed against the live node.
+Drafted 2026-11-17, rehearsed and **executed the same day** (see "Cutover results" at the end).
+The live node is now OSCAR 3.11 at `/opt/oscar/oscar-3.11.0`; 3.5 is stopped and kept for rollback.
 
 ## Where we start
 
@@ -205,3 +205,47 @@ unknown, expect a few GB compressed from the 22 GB cluster); the Cloudflare chan
 certificate; `--backup-mode single`; a cold Docker image build; Patrol 1 alarm occupancies (the
 simulated walker had not reached a hotspot; covered earlier on the scratch stack).
 
+
+## Cutover results (2026-11-17, executed)
+
+Decisions taken (plan defaults): **1** (a) verified dump + 3.5 directory kept, no history import;
+**2** `https://oscar-3-3-6.anthracitered.com` on 443, self-signed, SANs `10.235.20.56` and
+`OSCAR-3-3-6`; **4** no MQTT clients were connected to 1883/8083, so they were dropped;
+**5** `admin` only (password in `/root/oscar-3.11-admin-password.txt`, mode 600); **6** 7-day
+video retention; **7** OCR on every occupancy; **8** backups disabled (single disk).
+**3 (Cloudflare) is still to do**, along with Phase 5 client steps.
+
+| step | result | time (UTC) |
+|---|---|---|
+| 1.1 release | parent tag `v3.11.0-mjd948.1` (81caa36), zip SHA-256 `c7ead736…` | |
+| 3.1 rehearsal stack removed | done before the backup, to free disk | 12:14 |
+| 2 backup | `/srv/oscar-3.5-archive/`: `gis-2026-11-17.dump` 642 MB in 2 min 31 s (`pg_restore --list` reads 16 tables incl. `obs`), node tarball 568 MB, `config-3.5.json`, `SHA256SUMS` | 12:15–12:18 |
+| 3.3 unzip + init | done while 3.5 still ran (init binds no ports); heap `-Xmx4g` with ORNL's other JVM flags kept | 14 s |
+| 3.4 first start | healthy, standard config | 53 s |
+| 3.4 migrate | 5 lanes, 4 cameras converted, 7-day retention, OCR all occupancies | <1 s |
+| **downtime start** | `oscar` disabled and stopped, `oscar-postgis-container` stopped (restart policy set to `no`) | 12:19:59 |
+| 3.4 apply + start | the first copy failed (staging dir not readable by uid 10001), redone with a 10001-owned dir | |
+| 3.4 health | **unhealthy**: see the readiness defect below. The gateway served throughout (401 for anonymous) | 12:23 |
+| hotfix | modules `a3325cfd`, overlay image (`overlay/Dockerfile`, base tagged `oscar:3.11.0-mjd948.1`), `oscar.sh restart` → healthy, ready marker present | 12:30:43 |
+| 4 `acceptance.mjs` (portal lanes) | pass: 4 RPMs and cameras online, video plays in every Lane View, no page errors | |
+| 4 ORNL Step-3 checks | pass (308 redirect, TLS `/healthz` and headers, 401 anonymous, ConSys systems and datastreams, 8 viewer routes, admin UI) | |
+| 4 data | occupancies and `vehicleOcr` results on all four portal lanes within minutes | |
+| 4 archive status / verify | pass (empty archive, as expected on a fresh deployment) | |
+
+**Downtime:** about 10 minutes of a usable but unhealthy node (12:20–12:30), all of it the
+readiness defect; under 1 minute otherwise.
+
+**Readiness defect found at cutover.** The site simulator's RS-350 (10.235.20.94:10110) and D5
+(10111) were not listening. Our RPM recovery supervisor restarts the failed RS-350, and each
+attempt holds it in `STARTING` for the driver's whole connection loop (about 100 s); ORNL's
+`ApplicationReadiness` read that as a start in flight and withdrew `/tmp/oscar-ready`, so one
+unreachable detector kept the node unhealthy and `oscar.sh start` failed. Fixed in modules
+`b5547e82` (merged as `a3325cfd`): the supervisor reports recovery, `LaneSystem` exposes it through
+`IAutoStartDispatchStatus.isMemberUnderRecovery`, and readiness treats such a member as settled.
+Tests: `RpmRecoverySupervisorTest` (7), `ApplicationReadinessTest` (11). The rehearsal missed it
+because every simulator was up; the next release zip must include it (the live image is the
+`.1` image plus this overlay).
+
+**Still open:** Patrol 1 is offline until the site's RS-350 simulator is back (it will reconnect
+by itself); Cloudflare tunnel target (decision 3); client certificate trust and bookmarks; viewer
+page imports; Phase 6 retirement after sign-off.
