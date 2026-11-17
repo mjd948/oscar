@@ -246,6 +246,12 @@ Tests: `RpmRecoverySupervisorTest` (7), `ApplicationReadinessTest` (11). The reh
 because every simulator was up; the next release zip must include it (the live image is the
 `.1` image plus this overlay).
 
+**After cutover (same day):** the viewer's Video Stream widget showed ORNL's fixed 500 px player
+inside a shorter frame (black, scroll to see the picture). Fixed in viewer `0d7ab80` (merged as
+`90e6182`): opt-in `fillHeight` on `VideoMedia`/`HLSVideoComponent`, set by the widget; Lane View
+keeps 500 px. Deployed in the same overlay image (the viewer `web/` replaced, ORNL's
+`video-guides` kept); `check-video-fit.mjs` passes on the live node.
+
 **Still open:** Patrol 1 is offline until the site's RS-350 simulator is back (it will reconnect
 by itself); Cloudflare tunnel target (decision 3); client certificate trust and bookmarks; viewer
 page imports; Phase 6 retirement after sign-off.
