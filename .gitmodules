@@ -13,7 +13,7 @@
 [submodule "web/oscar-viewer"]
 	path = web/oscar-viewer
 	url = https://github.com/mjd948/oscar-viewer.git
-	branch = main
+	branch = ornl-3.11-rollin
 [submodule "docs/video-guides"]
 	path = docs/video-guides
 	url = https://github.com/ORNL/oscar-video-guides.git

@@ -110,4 +110,24 @@ Tracks: **R** = reliability, **M** = mobile, **W** = widget dashboard.
 
 ### Open items
 - **GPS `location` datastreams are not in the PARQUET_PRIMARY allowlist.** The list lives in osh-addons `TieredArchiveConfig.DEFAULT_OUTPUT_NAMES` and is mirrored in `dist/config/standard/config.json`. A persisted list that differs from a known default stops ORNL's automatic list upgrades, so adding `location` belongs upstream in osh-addons (we have no fork) rather than in our config. Until then mobile GPS fixes stay in hot PostGIS `obs`.
-- **Viewer not ported.** Every viewer commit, the "reliability" ones included, sits on our widget-dashboard architecture (`LaneStreamRegistry`, widget `LaneStatus`), so none cherry-pick onto ORNL main on its own. The viewer work is a re-host of the widget dashboard onto ORNL's components, with the reliability and mobile fixes re-applied on top.
+- **Viewer: fixes and mobile ported, widget dashboard not yet.** See the viewer section below.
+
+## Viewer port, phase 1: fixes and mobile on ORNL's own dashboard (branch `rollin/reliability`)
+
+| old commit(s) | verdict | what happened |
+|---|---|---|
+| 71fbdf8 492d6ac (comms loss, device-data liveness) | **re-implemented** (1743858, 4609991) | ORNL's `useLaneHealth` trusted the latest `connectionStatus` however old, so a stopped module stayed green and D5 lanes stayed "unknown". Silence of ~1 Hz device streams now overrides it (30 s, node timestamps; failed batches are not judged). The map sweep uses browser arrival time (15 s). |
+| 1c4272e (lane-status stream death) | superseded | ORNL replaced per-stream lane status with a polled health snapshot and ref-counted `acquireSharedConnection` leases |
+| 88abacc 005fff8 1092ba1 db61750 (mobile map) | **re-implemented** (4609991) | walker markers on live GPS, normal/alarm/offline; unadjudicated alarm markers from the server's `adjudicatedIdsCount=0` filter; first-fix-only extent fit. Also fixes ORNL's map reading the nonexistent `data.connection`, and `toLaneMapLocation` dropping `{sensorLocation}` GPS records. The 1092ba1/db61750 e2e specs depend on the widget page; replaced for now by unit specs |
+| b135e23 (mobile alarm audio) | **re-implemented** (99ea91a) | mobile occupancies trigger the dashboard alarm; auto-adjudicated ones stay silent |
+| 6882586 (WebID reliable) | **half re-implemented** (193b916) | ORNL fixed accumulation, deps and subscribe. The fetch still scanned the stream oldest-first, capped at 2,500. It now filters by `occupancyObsId`, falling back to the old scan |
+| 95c6685 (hls.js worker) | ported (29492c6) | `enableWorker: false` |
+| 26e5cac (re-render storm) | partly ported (a805646) | gate map status updates; the BroadcastChannel leak does not exist with ORNL's plain Leaflet markers |
+| e6320ea (video freeze) | superseded, pending e2e | ORNL: muted autoplay, deliberate low-latency live window, HLS viewer leases |
+| aa86efe (event-details crash) | superseded | ORNL guards every `laneMapRef.current.get` deref |
+| 372d7b2 (bounded adjudication fetch) | superseded | it fixed our own widget-era `useAdjudicationMap`; ORNL filters with `adjudicatedIdsCount` server-side |
+| 2a5b5d6 4b3bc58 0a61f74 (node port/scheme/creds/persistence) | superseded | ORNL defaults the port to 443/80, builds empty `connectorOpts` without credentials, defaults `auth` to empty strings, has `serializeNode`, and moved to session auth |
+| d65ff31 7652f07 33835eb (OCR chips, Vehicle ID column) | upstream | ORNL `VehicleIdOcr`, `useVehicleOcrMap`, Vehicle ID column |
+| ba9c93c c47e4ad (serve-proxy) | deferred | dev harness; port with the e2e verification phase |
+| a4603b1 94f4255 (e2e specs) | deferred | to the runtime verification phase |
+| widget dashboard stack | phase 3 | not started |
