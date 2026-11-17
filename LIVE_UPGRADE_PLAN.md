@@ -1,6 +1,7 @@
 # Live node upgrade: OSCAR 3.5.0 → 3.11 (our `ornl-3.11-rollin` build)
 
-Drafted 2026-11-17. Nothing in this plan has been executed against the live node.
+Drafted 2026-11-17 and rehearsed the same day on this host (see "Rehearsal results" at the end).
+Nothing in this plan has been executed against the live node.
 
 ## Where we start
 
@@ -62,9 +63,9 @@ imported.
 1. **Freeze a release.** Tag the parent `ornl-3.11-rollin` (e.g. `v3.11.0-mjd948.1`) after the last
    merge, `npm run build` the viewer, `./gradlew build -x test -x osgi`, keep the zip
    (`build/distributions/oscar-3.11.0.zip`) and its SHA-256.
-2. **Config migration script** (`tools/live-upgrade/migrate-config.py`, to be written, built on
-   `tools/scratch-verification/seed-scratch-lanes.py`). It reads the live `config.json` and writes
-   only lane and service settings into a **fresh 3.11 `config.json`**:
+2. **Config migration script** (`tools/live-upgrade/migrate-config.py`, unit tests alongside). It
+   reads the live `config.json` and writes only lane and service settings into a **fresh 3.11
+   `config.json`**:
    - lanes keep `name`, `uniqueID` (NSDD1–4, PATROL1, so system UIDs stay the same), `location`,
      `laneOptionsConfig` (RPM host/port, EML), `ocrConfig` (drops `plateAutofillConfidence`, sets
      `alarmsOnly` per decision 7); `subsystems` are left empty so LaneSystem rebuilds its members;
@@ -102,10 +103,11 @@ imported.
 
 ## Phase 3: cutover (downtime starts)
 
-1. **Remove the scratch stack**: `bash /opt/oscar-scratch/oscar-3.11.0/oscar.sh stop`, then
-   `docker compose -p oscar down`, `docker volume rm oscar_oscar_state oscar_postgres_data`, stop the
-   mock simulators, delete `/opt/oscar-scratch`, and remove the `oscar-scratch.local` line from
-   `/etc/hosts`.
+1. **Remove the rehearsal stack** (now at `/opt/oscar-rehearsal`): `oscar.sh stop`, then
+   `docker compose -p oscar --env-file .env -f compose.yaml down --remove-orphans`,
+   `docker volume rm oscar_oscar_state oscar_postgres_data`, stop the simulators
+   (`tools/scratch-verification/mockctl.sh stop …`), delete the directory, and remove its `/etc/hosts`
+   line. 7 s in rehearsal.
 2. **Stop 3.5**: `systemctl stop oscar && systemctl disable oscar`, then `docker stop oscar-postgis-container`.
    Nothing is deleted: `pgdata`, the container and `/opt/oscar/oscar-3.5.0` stay for rollback.
 3. **Install 3.11**: unzip the frozen release to `/opt/oscar/oscar-3.11.0`, then run
@@ -113,14 +115,23 @@ imported.
    (add `--certificate/--private-key` if importing a real certificate). In `.env`, set
    `OSCAR_JAVA_OPTS` to about `-Xms1g -Xmx4g`: 6 GB plus PostgreSQL's 512 MB of shared buffers and the
    gateway does not fit this 8 GB host.
-4. `bash oscar.sh start` once so 3.11 writes its standard config, then stop the oscar container,
-   apply the migrated `config.json` into the state volume (as uid 10001, mode 600) and start again.
-   Wait for `healthy`. If it sticks at `starting`, check for ORNL's bucket-service race
-   ("Could not find this OSH node's Bucket Service"); one restart clears it.
-5. Smoke check from the host: `/healthz`, sign in, all five lanes under Sensors in the admin UI,
-   then **Save** in the admin UI so the lane modules persist.
+4. `bash oscar.sh start` once so 3.11 writes its standard config. Copy it out with
+   `docker cp oscar-oscar-1:/var/lib/oscar/config.json fresh.json`, then run
+   `migrate-config.py --live <3.5 config.json> --fresh fresh.json --out config.json` (no host
+   rewrites on the real cutover). Stop the oscar container, copy `config.json` into the
+   `oscar_oscar_state` volume with a one-shot container (`--user 10001:10001`, mode 600; stage the
+   file in a directory Docker can read), and start it again. Wait for `healthy`. If it sticks at
+   `starting`, check for ORNL's bucket-service race ("Could not find this OSH node's Bucket
+   Service"); one restart clears it.
+5. Smoke check from the host: `/healthz`, sign in, all five lanes under Sensors in the admin UI.
+   No admin-UI Save is needed: the lanes are in `config.json` already, and a restart reloads them
+   (rehearsed).
 
 ## Phase 4: acceptance (on the live node)
+
+`tools/live-upgrade/acceptance.mjs` automates the read-only part (lanes and cameras online, no
+portal faults on the walker, every camera plays, the walker moves, no page errors):
+`OSCAR_BASE=https://<host> PW_FILE=… node acceptance.mjs`.
 
 - ORNL's Step-3 checks against the live hostname: TLS gateway, 401 for anonymous, ConSys systems
   and datastreams, all eight viewer routes, admin UI (`tools/scratch-verification` README).
@@ -164,3 +175,33 @@ Data recorded by 3.11 in the meantime stays in its volumes and is not visible to
 - Live video retries on its own after a camera drop.
 - Mobile GPS (`location`) is not in ORNL's Parquet allowlist, so it stays in hot PostGIS. That is
   fine at this scale.
+
+## Rehearsal results (2026-11-17, on this host, live node running alongside)
+
+Release: parent `4b65507`, modules `3fe11ea8`, viewer `44ee7b1`; `oscar-3.11.0.zip` SHA-256
+`c7ead736d5181956…`. Installed at `/opt/oscar-rehearsal/oscar-3.11.0` as `oscar-rehearsal.local:443`,
+`-Xmx4g`, backups disabled. Input was a copy of the **live** `config.json`; RPM endpoints were rewritten to
+local simulators on the live ports (10100–10103, 10110); cameras stayed on the shared RTSP box.
+
+| step | result | time |
+|---|---|---|
+| 3.1 remove the previous 3.11 stack | done; live node unaffected (HTTP 200 throughout) | 7 s |
+| 3.3 unzip + `init` | done (Docker build layers cached; a cold image build takes several minutes more) | 5 s + 26 s |
+| 3.4 first start | healthy | 46 s |
+| 3.4 migrate config | 5 lanes, 4 cameras converted, OCR `plateAutofillConfidence` dropped, service settings + 7-day retention carried | <1 s |
+| 3.4 apply + start | healthy; only warning is ORNL's RS-350 WebID startup race | 27 s |
+| 4 ORNL Step-3 checks | pass (TLS gateway, 401 anonymous, ConSys, 8 viewer routes, admin) | ~1 min |
+| 4 `acceptance.mjs` | pass: 4 portal lanes and cameras online, every camera plays in Lane View, Patrol 1 online with no portal faults and moving on the map, no page errors | ~2 min |
+| 4 data | occupancies on all four portal lanes; OCR results on each, including non-alarm vehicles (all-occupancies setting works) | after ~6 min |
+| 4 archive status / verify | pass | |
+| 4 restart persistence | `oscar.sh restart` → healthy in 54 s, five lanes in `config.json`, acceptance passes again | 54 s |
+
+**Measured machine time for Phase 3 is under 3 minutes**; a 30-minute window leaves room for the human
+steps (Cloudflare, certificates, sign-off). With both JVMs running (3.5 at 6 GB, 3.11 at 4 GB) the
+host held up for the rehearsal, but run them together only briefly.
+
+Not rehearsed: the `pg_dump` of the live database (Phase 2 reads the live node; size and duration
+unknown, expect a few GB compressed from the 22 GB cluster); the Cloudflare change; importing a real
+certificate; `--backup-mode single`; a cold Docker image build; Patrol 1 alarm occupancies (the
+simulated walker had not reached a hotspot; covered earlier on the scratch stack).
+
