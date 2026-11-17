@@ -123,11 +123,48 @@ Tracks: **R** = reliability, **M** = mobile, **W** = widget dashboard.
 | 6882586 (WebID reliable) | **half re-implemented** (193b916) | ORNL fixed accumulation, deps and subscribe. The fetch still scanned the stream oldest-first, capped at 2,500. It now filters by `occupancyObsId`, falling back to the old scan |
 | 95c6685 (hls.js worker) | ported (29492c6) | `enableWorker: false` |
 | 26e5cac (re-render storm) | partly ported (a805646) | gate map status updates; the BroadcastChannel leak does not exist with ORNL's plain Leaflet markers |
-| e6320ea (video freeze) | superseded, pending e2e | ORNL: muted autoplay, deliberate low-latency live window, HLS viewer leases |
+| e6320ea (video freeze) | superseded, **plus a new gap fixed** (9621bc8) | ORNL: muted autoplay, deliberate low-latency live window, HLS viewer leases. The scratch run showed ORNL stops at a manual Retry after a camera drop; the player now retries on its own (see the scratch-verification section) |
 | aa86efe (event-details crash) | superseded | ORNL guards every `laneMapRef.current.get` deref |
 | 372d7b2 (bounded adjudication fetch) | superseded | it fixed our own widget-era `useAdjudicationMap`; ORNL filters with `adjudicatedIdsCount` server-side |
 | 2a5b5d6 4b3bc58 0a61f74 (node port/scheme/creds/persistence) | superseded | ORNL defaults the port to 443/80, builds empty `connectorOpts` without credentials, defaults `auth` to empty strings, has `serializeNode`, and moved to session auth |
 | d65ff31 7652f07 33835eb (OCR chips, Vehicle ID column) | upstream | ORNL `VehicleIdOcr`, `useVehicleOcrMap`, Vehicle ID column |
-| ba9c93c c47e4ad (serve-proxy) | deferred | dev harness; port with the e2e verification phase |
-| a4603b1 94f4255 (e2e specs) | deferred | to the runtime verification phase |
+| ba9c93c c47e4ad (serve-proxy) | **dropped** | not needed on 3.11: ORNL's gateway already serves the viewer same-origin with session login, which is what the proxy faked |
+| a4603b1 94f4255 (e2e specs) | replaced for now | the scratch run used Playwright scripts against the gateway (see the scratch-verification section); cypress e2e specs return with the widget dashboard |
 | widget dashboard stack | phase 3 | not started |
+
+## Scratch verification (2026-11-17)
+
+The `ornl-3.11-rollin` build ran as ORNL's own Docker Compose deployment at
+`/opt/oscar-scratch` (gateway on 443), beside the untouched live 3.5 node. It used four
+lanes: two Rapiscan portals on `rapiscan_mock.py`, each with a live RTSP camera from the sim
+box, an RS-350 walker and a D5 walker. Scripts and how-to are in `tools/scratch-verification/`.
+
+| check | result |
+|---|---|
+| ORNL live-deployment checks (Step 3 of `test-live-deployment-regression.sh`): TLS gateway, anonymous 401, ConSys systems/datastreams, all 8 viewer routes render, admin UI | **pass** (one assertion relaxed, see ORNL issues) |
+| `oscar.sh archive status` / `archive verify` | pass (empty archive) |
+| RS-350 walker: simulator stopped, lane chip | offline after 40 s; back online 32 s after the simulator returned, **no module restart** |
+| Rapiscan portal: simulator stopped, lane chip | offline after 30 s; back 25 s after return |
+| Rapiscan portal: 4-minute outage, past ORNL's 11 reconnect attempts | **fails (ORNL, not fixed)**: 11 attempts 10 s apart, then the RPM module stays in ERROR. The simulator came back at +4 min and the lane never recovered (checked for 3 min). The chip correctly shows it offline |
+| D5 walker: simulator stopped | **failed, fixed** (9f696271): the driver never reconnected and logged 2 ERRORs/s. Now 1→30 s backoff, one ERROR line, back without a restart |
+| D5 lane occupancy state | **failed, fixed** (a563bf30): every D5 dailyFile event threw `Unknown item 'isOccupied'` on 3.11 |
+| Mobile lane chips | **failed, fixed** (0bf55f0): false Extended Occupancy fault on walkers in long alarm episodes, plus four portal-only indicators stuck on "?" |
+| Map: walker markers present and moving, map does not re-centre | pass |
+| Map: unadjudicated walker alarm marker, popup → VIEW EVENT, Code 9 adjudication clears it | pass (cleared 30 s after the command, i.e. next refresh) |
+| WebID `occupancyObsId` filter | node applies `filter=` server-side (`gammaAlarm=true` → 12 of 49; unknown field → 0, which triggers the viewer's fallback scan). No WebID results exist on the scratch node, so the match itself is not exercised |
+| Live HLS: plays within 1 s of opening lane view | pass |
+| Live HLS: 45 s RTSP cut on one camera (container netns only) | node: MediaMTX/FFmpeg reconnect in place and resume segments 3 s after the feed returns (pass). Viewer: **failed, fixed** (9621bc8): it stopped at a manual Retry; now it retries itself and resumed 40 s after the feed returned |
+| Viewer component suite (electron) | **299/299 pass**, including the new mobile-lane and auto-retry tests |
+| Mobile alarm triggers the dashboard alarm sound | **not run** at runtime (portal alarms from the mocks would confound it); covered by code review only |
+
+### 3.11 configuration changes that matter for the live-node upgrade
+- **Camera URLs:** a `CustomCameraConfig` now needs the RTSP port in `remoteHost` (`10.235.20.94:9001`) and a leading `/` in `streamPath` (`/cam1`). The live node's 3.5 form (`remoteHost: 10.235.20.94`, `streamPath: ":9001/cam1"`) builds `rtsp://10.235.20.94/:9001/cam1` and never connects. All four live cameras use the old form.
+- **Lane names:** 12 characters at most, otherwise the lane fails to initialize.
+- The D5 dailyFile schema change creates a second `dailyFile` datastream for existing D5 lanes. Only our forks have D5 lanes.
+
+### ORNL upstream issues found (not ours, not fixed here)
+- **Gateway `Host` header drops the port.** `docker/gateway/default.conf` forwards `Host $host`, so with `--port` other than 443 the backend's trailing-slash redirects (`/event-log` → `https://host/event-log/`) lose the port and every viewer route but `/` fails. The port-80 → HTTPS redirect drops it too. Fix: `$http_host`.
+- **10 s hard wait for the Bucket Service.** `OSCARServiceModule.doInit` waits 10 s for the bucket service; on a loaded host it took 11 s. The OSCAR service then failed for good and the container stayed unhealthy (no readiness marker) until restarted. Seen once in about six boots.
+- **RS-350 WebID attach race.** `RS350Sensor.doStart` can run before the OSCAR service has its WebID handler: `Could not attach WebID Analysis to RS350` (NPE). That walker then runs without WebID until restarted.
+- **Portal RPMs give up after ~2 minutes.** `LaneSystem` sets `commSettings.connection.reconnectAttempts = 10` for every RPM type it builds (Rapiscan, Aspect, RS-350, D5 config paths). `RobustConnection` then throws "Maximum number of connection attempts reached" and the RPM module stays in ERROR until restarted by hand. A switch reboot or a cable pull longer than ~2 min takes a portal lane down for good. The live 3.5 node likely has the same default; not yet compared.
+
