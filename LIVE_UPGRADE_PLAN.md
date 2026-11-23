@@ -312,3 +312,25 @@ dump and tarball in `/srv/oscar-3.5-archive` stay).
 4. `acceptance.mjs`, ORNL Step-3 checks, `check-video-fit.mjs` against the live hostname.
 5. Rollback: `bash oscar.sh stop` in `oscar-3.11.10`, `bash oscar.sh start` in `oscar-3.11.0`
    (rehearsed). Keep `oscar-3.11.0` until sign-off.
+
+### Executed on the live node (2026-11-23)
+
+1. **3.5 retired (Phase 6):** `oscar-postgis-container`, the `oscar-postgis:latest` image, the
+   `oscar.service` unit and `/opt/oscar/oscar-3.5.0` (22 GB `pgdata`, 5 GB files) deleted; the
+   verified dump, tarball and config in `/srv/oscar-3.5-archive` re-checked against `SHA256SUMS`
+   first and kept. Disk 79% → **44%**.
+2. **Upgrade:** `/opt/oscar/oscar-3.11.10` from `oscar-3.11.10.zip` (`fff276c4…`), `.env` identical
+   to 3.11.0 plus `OSCAR_GUI_UPDATE=disabled`; `oscar.sh upgrade` 23:11:51–23:15:24 UTC (3 min 33 s,
+   image build while 3.11.0 served; downtime about 2.5 min, longer than rehearsed because readiness
+   waited out Patrol 1's unreachable RS-350 at the site simulator).
+3. **Checks (no sign-in):** `/healthz` ok, 308 to HTTPS, anonymous API 401, login page 200, tunnel
+   host header 200; all containers from the new directory (`oscar:3.11.10`, `oscar-postgis:3.11.10`,
+   nginx 1.30.7); all four portal lanes, RPMs and cameras started; archive verify passes, 2,880,279
+   archived observations in 930 objects unchanged; hot rows 3,685 → 5,004 (new data arriving); OCR
+   completed on a new occupancy; no storage-pressure activity.
+4. **Not yet run:** the signed-in browser checks (`acceptance.mjs`, ORNL Step-3, `check-video-fit`):
+   the admin password was changed after cutover, so `/root/oscar-3.11-admin-password.txt` is stale.
+
+Rollback until sign-off: `bash oscar.sh stop` in `/opt/oscar/oscar-3.11.10`, then
+`bash oscar.sh start` in `/opt/oscar/oscar-3.11.0` (rehearsed; its `oscar:3.11.0` overlay image is
+kept). 3.5 is no longer a rollback target.
