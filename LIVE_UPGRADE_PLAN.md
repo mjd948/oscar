@@ -328,8 +328,11 @@ dump and tarball in `/srv/oscar-3.5-archive` stay).
    nginx 1.30.7); all four portal lanes, RPMs and cameras started; archive verify passes, 2,880,279
    archived observations in 930 objects unchanged; hot rows 3,685 → 5,004 (new data arriving); OCR
    completed on a new occupancy; no storage-pressure activity.
-4. **Not yet run:** the signed-in browser checks (`acceptance.mjs`, ORNL Step-3, `check-video-fit`):
-   the admin password was changed after cutover, so `/root/oscar-3.11-admin-password.txt` is stale.
+4. **Signed-in checks (run afterwards):** `acceptance.mjs` (four portal lanes and cameras online,
+   video plays in every Lane View, no page errors; Patrol 1 skipped, its detector is down at the
+   site), `check-video-fit.mjs` and ORNL's 3.11.10 Step-3 checks all pass. The admin password is
+   unchanged (`/root/oscar-3.11-admin-password.txt`); one API probe returned 401 before the upgrade,
+   but form and basic sign-in both work with it.
 
 Rollback until sign-off: `bash oscar.sh stop` in `/opt/oscar/oscar-3.11.10`, then
 `bash oscar.sh start` in `/opt/oscar/oscar-3.11.0` (rehearsed; its `oscar:3.11.0` overlay image is
