@@ -13,7 +13,7 @@ export async function open() {
   const u = page.getByLabel('Username');
   if (await u.isVisible({ timeout: 5000 }).catch(() => false)) {
     await u.fill('admin'); await page.getByLabel('Password').fill(PW);
-    await Promise.all([page.waitForURL(url => !url.pathname.startsWith('/login'), { timeout: 20000 }), page.getByRole('button', { name: 'Sign in' }).click()]);
+    await Promise.all([page.waitForURL(url => !url.pathname.startsWith('/login'), { timeout: 20000 }), page.getByRole('button', { name: 'Sign in', exact: true }).click()]);
   }
   return { browser, context, page, errors };
 }

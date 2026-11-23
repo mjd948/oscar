@@ -255,3 +255,60 @@ keeps 500 px. Deployed in the same overlay image (the viewer `web/` replaced, OR
 **Still open:** Patrol 1 is offline until the site's RS-350 simulator is back (it will reconnect
 by itself); Cloudflare tunnel target (decision 3); client certificate trust and bookmarks; viewer
 page imports; Phase 6 retirement after sign-off.
+
+## Update to 3.11.10 (ORNL merge): plan and rehearsal (2026-11-23)
+
+The live node is now a Compose deployment, so this is ORNL's supported **clean sibling-directory
+upgrade** (`oscar.sh upgrade`), not a rebuild: same volumes, data and accounts kept.
+
+### Rehearsal
+
+Release: parent `50a83b1` (modules `92f519f6`, viewer `bd8581d`), `oscar-3.11.10.zip` SHA-256
+`fff276c4b41fbc1d…`. ORNL's compose hard-codes the project name, external volume names and port 80,
+so a second stack cannot share the live Docker daemon: the rehearsal ran in a privileged
+Docker-in-Docker container (`docker:27-dind`, capped at 3.5 GB, 172.17.0.2 as
+`oscar-rehearsal.local`) with ORNL's scripts unmodified. It started from an exact copy of live:
+the `v3.11.0-mjd948.1` zip (`c7ead736…`) plus the live overlay image, and the live `config.json`
+(accounts included) with only the five RPM endpoints pointed at local simulators.
+
+| step | result | time |
+|---|---|---|
+| baseline on the live copy | acceptance passes (5 lanes, cameras, video, Patrol 1 moving), occupancies recorded | |
+| extract 3.11.10 beside, copy `.env`/`secrets/`/`tls/`, add `OSCAR_GUI_UPDATE=disabled` | volumes already labelled; no adoption needed | <1 min |
+| `oscar.sh upgrade` | images built, containers recreated from the new dir, healthy | **81 s** |
+| first run of ORNL's endpoint sync on the old config | 5 lanes intact; sync markers persisted | |
+| `acceptance.mjs` | pass, incl. Patrol 1 | |
+| ORNL 3.11.10 Step-3 checks | pass | |
+| `check-custom-pages`, `check-video-fit` | pass | |
+| history | all pre-upgrade occupancies present, new ones arriving | |
+| archive status / verify | pass | |
+| `oscar.sh restart` | healthy | 53 s |
+| System Update page | `guiUpdateEnabled: false`, version 3.11.10, no host agent installed | |
+| **rollback**: `stop` in 3.11.10, `start` in 3.11.0 | healthy on the migrated volumes, acceptance passes, data intact | 5 s + 48 s |
+| upgrade again (idempotent) | healthy, acceptance passes | 58 s |
+
+Harness fix: 3.11.10's login page adds "Sign in with a passkey", so the sign-in button locator is
+now exact.
+
+### Found during the rehearsal: live disk pressure (action needed)
+
+ORNL's storage-pressure retention deletes media when the disk passes **85%** until it is back at
+80%. The live disk crossed 85% on **2026-11-20**; since then the live node has run 1,813 cleanups,
+deleting **OCR evidence crops only** (1,200 at first, then each new crop shortly after it was
+written). No clips or events were deleted ("inspecting 0 media sets" throughout). The rehearsal
+pushed the disk to 94%; pruning Docker build caches and the dropped packaging's builder images
+(Wine/Electron, InnoSetup, RockyLinux; re-downloadable) brought it to 79%, under the threshold.
+The lasting fix is Phase 6: the retired 3.5 data is 22 GB `pgdata` + 5 GB `files` (the verified
+dump and tarball in `/srv/oscar-3.5-archive` stay).
+
+### Live procedure
+
+1. Disk well under 85% (Phase 6 retirement of 3.5 data recommended first).
+2. `unzip oscar-3.11.10.zip -d /opt/oscar/`; copy `.env`, `secrets/`, `tls/` from `oscar-3.11.0`;
+   append `OSCAR_GUI_UPDATE=disabled` (keeps ORNL's GitHub updater from replacing this fork build).
+3. `cd /opt/oscar/oscar-3.11.10 && bash oscar.sh upgrade`; the image build happens before the stop,
+   so downtime is about a minute, plus up to ~100 s if a detector is offline (readiness waits out
+   its first connection loop).
+4. `acceptance.mjs`, ORNL Step-3 checks, `check-video-fit.mjs` against the live hostname.
+5. Rollback: `bash oscar.sh stop` in `oscar-3.11.10`, `bash oscar.sh start` in `oscar-3.11.0`
+   (rehearsed). Keep `oscar-3.11.0` until sign-off.
