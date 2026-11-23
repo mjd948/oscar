@@ -11,6 +11,30 @@ case "$command_name" in
     backup|backup-verify|backup-prune|restore|archive)
         exec bash "$script_dir/oscar-storage.sh" "$command_name" "$@"
         ;;
+    usb-backup|continual-backup)
+        exec bash "$script_dir/oscar-usb-backup.sh" "$@"
+        ;;
+    sandbox|training-sandbox)
+        exec bash "$script_dir/oscar-sandbox.sh" "$@"
+        ;;
+    update|self-update)
+        exec bash "$script_dir/oscar-update.sh" "$@"
+        ;;
+    remote-access)
+        exec bash "$script_dir/oscar-remote-access.sh" "$@"
+        ;;
+    rpm-proxy)
+        exec bash "$script_dir/oscar-rpm-proxy.sh" "$@"
+        ;;
+    wizard|firstboot-wizard)
+        exec bash "$script_dir/ubuntu/oscar-firstboot-wizard.sh" "$@"
+        ;;
+    create-autoinstall-usb)
+        exec bash "$script_dir/ubuntu/create-autoinstall-usb.sh" "$@"
+        ;;
+    host-check|prepare-host|identify-nics|stage-site-network|apply-site-network|rollback-network|discover-devices)
+        exec bash "$script_dir/configure-ubuntu-host.sh" "$command_name" "$@"
+        ;;
 esac
 
 hostname_value=''
@@ -34,17 +58,31 @@ log_tail=200
 log_tail_explicit=false
 log_follow=false
 support_output_path=''
+reset_user='admin'
+reset_must_change=false
+reset_password_stdin=false
 
 usage() {
     cat <<'EOF'
 OSCAR deployment administration
 
+  sudo ./oscar.sh wizard [--scan-only]
+  sudo ./oscar.sh create-autoinstall-usb [--list-drives] [--iso FILE] [--offline-bundle ZIP] [--device /dev/sdX]
+  sudo ./oscar.sh host-check [--strict] [--json] [--allow-dhcp]
+  sudo ./oscar.sh prepare-host [--expand-lvm] [--configure-ufw] [--offline] [--hold-docker]
+  sudo ./oscar.sh identify-nics [--watch [SECONDS]] [--blink NIC]
+  sudo ./oscar.sh stage-site-network [--config FILE | --from-netplan YAML]
+  sudo ./oscar.sh apply-site-network [--keep-wifi]
+  sudo ./oscar.sh rollback-network
+  sudo ./oscar.sh discover-devices [--interface NIC] [--subnet CIDR] [--temp-ip IP/CIDR]
   sudo ./oscar.sh init [--hostname oscar.local] [--port 443] [--timezone America/Chicago]
       [--tls-mode self-signed|import] [--certificate FILE --private-key FILE]
       [--tls-san DNS_OR_IP]... [--no-auto-network-sans]
       [--add-hosts-entry] [--skip-hosts-entry] [--skip-start]
       [--backup-mode disabled|single] [--backup-dir ABSOLUTE_PATH]
       [--prerequisites auto|existing|bundled]
+  sudo ./oscar.sh refresh-tls [--hostname oscar.local] [--tls-san DNS_OR_IP]...
+  sudo ./oscar.sh reset-admin-password [--user admin] [--must-change] [--password-stdin]
   sudo ./oscar.sh check|verify|start|stop|restart|status
   sudo ./oscar.sh upgrade [--adopt-legacy-volumes] [--adopt-legacy-storage-roots]
       [--backup-mode disabled|single] [--backup-dir ABSOLUTE_PATH]
@@ -53,6 +91,15 @@ OSCAR deployment administration
   sudo ./oscar.sh backup
   sudo ./oscar.sh backup-verify BACKUP_ID
   sudo ./oscar.sh restore --backup BACKUP_ID --confirm BACKUP_ID
+  sudo ./oscar.sh usb-backup list-drives|status|attach|eject|sync
+  sudo ./oscar.sh usb-backup prepare-drive (--device /dev/sdX --confirm FORMAT | --path DIR) [--mode continual|occasional]
+  sudo ./oscar.sh usb-backup mode continual|occasional|disabled [--interval-minutes 15]
+  sudo ./oscar.sh usb-backup verify [--from PATH] [--backup-key FILE] [--deep]
+  sudo ./oscar.sh usb-backup restore [--from PATH] [--backup-key FILE] --confirm RESTORE
+  sudo ./oscar.sh sandbox start [--port 8444] [--ttl-minutes 120] [--track operator|supervisor|administrator]
+  sudo ./oscar.sh sandbox stop|reset|status
+  sudo ./oscar.sh rpm-proxy configure --from-csv LANES_CSV [--mode port-map|virtual-ip] [--start]
+  sudo ./oscar.sh rpm-proxy start|stop|restart|upgrade|status|logs|validate|disable
   sudo ./oscar.sh archive status|verify
   sudo ./oscar.sh archive hold list
   sudo ./oscar.sh archive hold create --store-key KEY --id-scope INT (--generation UUID | --observation ID) --reason TEXT
@@ -93,6 +140,12 @@ while (($#)); do
         --tail) log_tail=${2:?missing tail count}; log_tail_explicit=true; shift 2 ;;
         --follow) log_follow=true; shift ;;
         --output|--destination) support_output_path=${2:?missing output path}; shift 2 ;;
+        --user) reset_user=${2:?missing username}; shift 2 ;;
+        --must-change) reset_must_change=true; shift ;;
+        --password-stdin) reset_password_stdin=true; shift ;;
+        --password|--new-password)
+            fail 'Never pass passwords on the command line (visible in process listings and shell history). Prompt interactively or pipe via --password-stdin.'
+            ;;
         --help|-h) usage; exit 0 ;;
         *) fail "Unknown option: $1" ;;
     esac
@@ -260,6 +313,14 @@ detect_network_tls_sans() {
             if [[ $address == *:* && $interface != tailscale* ]]; then continue; fi
             is_ip_address "$address" && append_unique_tls_san "$address"
         done < <(ip -o address show up scope global 2>/dev/null | awk '{print $2, $4}')
+    fi
+
+    # Include any pre-staged on-site static IPv4s prepared via stage-site-network
+    # (for example, while staging off-site on hotel Wi-Fi/DHCP before site cutover).
+    if [[ -f /etc/oscar/staged-netplan/90-oscar-site.yaml ]]; then
+        while IFS= read -r address; do
+            [[ -n $address ]] && is_ip_address "$address" && append_unique_tls_san "$address"
+        done < <(sed -nE 's/^[[:space:]]*-[[:space:]]*([0-9]{1,3}(\.[0-9]{1,3}){3})\/[0-9]{1,2}[[:space:]]*$/\1/p' /etc/oscar/staged-netplan/90-oscar-site.yaml 2>/dev/null || true)
     fi
 
     # Tailscale IPs are normally discovered from tailscale0 above. Include its
@@ -903,14 +964,42 @@ configured() {
 compose() {
     assert_deployment_paths_safe
     require_managed_environment_bindings
+    local oct_rp_id="" archive_dir storage_root oct_env
+    archive_dir=$(get_env_value OSCAR_ARCHIVE_DIR)
+    if [[ -n $archive_dir && $archive_dir == /* ]]; then
+        storage_root=$(dirname "$archive_dir")
+    else
+        storage_root="$(CDPATH= cd -- "$script_dir/.." && pwd -P)/oscar-storage"
+    fi
+    oct_env="$storage_root/remote-access/octelium.env"
+    if [[ -f $oct_env ]] && awk -F= '$1 == "OCTELIUM_ENABLED" && $2 == "true" { found=1 } END { exit !found }' "$oct_env"; then
+        oct_rp_id=$(awk -F= '$1 == "OCTELIUM_DOMAIN" { print substr($0, index($0, "=") + 1); exit }' "$oct_env" | tr -d '\r')
+    fi
     (
         cd "$script_dir"
         env -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES -u COMPOSE_PROFILES \
             -u OSCAR_VERSION -u OSCAR_DEPLOYMENT_ID -u OSCAR_ARCHIVE_DIR -u OSCAR_BACKUP_DIR \
             -u OSCAR_BACKUP_MODE -u OSCAR_WAL_ARCHIVE_DIR -u OSCAR_SECRETS_DIR -u OSCAR_TLS_DIR -u OSCAR_BACKUP_KEY_FILE \
             -u OSCAR_HTTPS_PORT -u OSCAR_TIMEZONE -u OSCAR_JAVA_OPTS -u OSCAR_POSTGIS_PLATFORM \
+            OSCAR_WEBAUTHN_RP_ID="$oct_rp_id" \
             docker compose --project-name oscar --env-file "$script_dir/.env" --file "$script_dir/compose.yaml" "$@"
     )
+}
+
+invoke_remote_access_subcommand() {
+    if [[ ${OSCAR_STORAGE_TEST_MODE:-0} == 1 && ${OSCAR_REMOTE_ACCESS_TEST_ALLOW:-0} != 1 ]]; then
+        return 0
+    fi
+    [[ -f $script_dir/oscar-remote-access.sh ]] || return 0
+    bash "$script_dir/oscar-remote-access.sh" "$@"
+}
+
+invoke_rpm_proxy_subcommand() {
+    if [[ ${OSCAR_STORAGE_TEST_MODE:-0} == 1 && ${OSCAR_RPM_PROXY_TEST_ALLOW:-0} != 1 ]]; then
+        return 0
+    fi
+    [[ -f $script_dir/oscar-rpm-proxy.sh ]] || return 0
+    bash "$script_dir/oscar-rpm-proxy.sh" "$@"
 }
 
 stop_application_tier_ordered() {
@@ -919,6 +1008,7 @@ stop_application_tier_ordered() {
     # database available while OSCAR drains its writers and completes its
     # module shutdown. The service stop_grace_period values in compose.yaml
     # remain the authoritative per-service deadlines.
+    invoke_remote_access_subcommand stop-if-enabled || true
     compose stop gateway
     compose stop oscar
 }
@@ -1146,6 +1236,7 @@ export_host_support_bundle() {
         if [[ ${EUID:-$(id -u)} -eq 0 ]] && configured; then
             bash "$script_dir/oscar-storage.sh" archive status >"$raw_dir/archive/status.txt" 2>&1 || true
         fi
+        invoke_rpm_proxy_subcommand support-snapshot "$raw_dir/rpm-proxy" || true
     fi
 
     python3 - "$raw_dir" "$target_zip" "$generated_at" "$(release_version 2>/dev/null || echo unknown)" "$effective_tail" <<'PY'
@@ -1418,13 +1509,23 @@ arch_status = raw_dir / "archive" / "status.txt"
 if arch_status.is_file() and arch_status.stat().st_size > 0:
     add_text_entry("archive/status.txt", arch_status.read_text(encoding="utf-8", errors="replace"))
 
+rpm_proxy_dir = raw_dir / "rpm-proxy"
+if rpm_proxy_dir.is_dir():
+    for rpf in sorted(rpm_proxy_dir.iterdir()):
+        if rpf.is_file() and rpf.stat().st_size > 0:
+            add_text_entry(
+                f"rpm-proxy/{rpf.name}",
+                rpf.read_text(encoding="utf-8", errors="replace"),
+                scan_highlights=(rpf.suffix == ".log"),
+            )
+
 total_redactions = sum(stats.values())
 redaction_report = {
     "schemaVersion": 1,
     "generatedAt": generated_at,
     "policy": "automatic-edge-redaction",
     "bundleSource": "host-cli",
-    "neverCollected": ["secrets/*", "/run/secrets/*", "tls/*.key", ".keystore/*", "hivemq-data/*"],
+    "neverCollected": ["secrets/*", "/run/secrets/*", "tls/*.key", ".keystore/*", "hivemq-data/*", ".moduledata/oscar-identity.json", ".moduledata/.break-glass-reset.*", "remote-access/*"],
     "counts": {**stats, "totalRedactions": total_redactions},
 }
 summary = {
@@ -1553,6 +1654,13 @@ case "$command_name" in
             compose up --detach --no-build --pull never --wait --wait-timeout 240
             ensure_storage_database_features
             finalize_pending_fresh_init
+            if [[ ${OSCAR_KEEP_BOOTSTRAP_SECRET:-false} != true ]]; then
+                write_secret "$script_dir/secrets/oscar-admin-password.txt" '# CONSUMED_AT_INIT: Initial bootstrap password hashed into OSCAR state; manage accounts in OSCAR Viewer -> Users & Access.'
+                protect_deployment_files
+            fi
+            [[ -f "$script_dir/oscar-usb-backup.sh" ]] && bash "$script_dir/oscar-usb-backup.sh" install-agent >/dev/null 2>&1 || true
+            [[ -f "$script_dir/oscar-sandbox.sh" ]] && bash "$script_dir/oscar-sandbox.sh" install-agent >/dev/null 2>&1 || true
+            [[ -f "$script_dir/oscar-update.sh" ]] && bash "$script_dir/oscar-update.sh" install-agent >/dev/null 2>&1 || true
         fi
         printf '\nOSCAR setup complete: https://%s:%s/sensorhub/admin\n' "$hostname_value" "$port_value"
         print_client_access_instructions
@@ -1564,6 +1672,10 @@ case "$command_name" in
         compose up --detach --no-build --pull never --wait --wait-timeout 240
         ensure_storage_database_features
         finalize_pending_fresh_init
+        [[ -f "$script_dir/oscar-usb-backup.sh" ]] && bash "$script_dir/oscar-usb-backup.sh" install-agent >/dev/null 2>&1 || true
+        [[ -f "$script_dir/oscar-sandbox.sh" ]] && bash "$script_dir/oscar-sandbox.sh" install-agent >/dev/null 2>&1 || true
+        [[ -f "$script_dir/oscar-update.sh" ]] && bash "$script_dir/oscar-update.sh" install-agent >/dev/null 2>&1 || true
+        invoke_remote_access_subcommand sync
         ;;
     stop)
         require_admin; require_docker; configured || fail 'Run init before stopping OSCAR.'
@@ -1578,6 +1690,10 @@ case "$command_name" in
         compose up --detach --no-build --pull never --wait --wait-timeout 240
         ensure_storage_database_features
         finalize_pending_fresh_init
+        [[ -f "$script_dir/oscar-usb-backup.sh" ]] && bash "$script_dir/oscar-usb-backup.sh" install-agent >/dev/null 2>&1 || true
+        [[ -f "$script_dir/oscar-sandbox.sh" ]] && bash "$script_dir/oscar-sandbox.sh" install-agent >/dev/null 2>&1 || true
+        [[ -f "$script_dir/oscar-update.sh" ]] && bash "$script_dir/oscar-update.sh" install-agent >/dev/null 2>&1 || true
+        invoke_remote_access_subcommand sync
         ;;
     status)
         require_docker; compose ps
@@ -1585,6 +1701,8 @@ case "$command_name" in
             local_hostname=$(awk -F= '$1 == "OSCAR_HOSTNAME" { print substr($0, index($0, "=") + 1); exit }' "$script_dir/.env")
             local_port=$(awk -F= '$1 == "OSCAR_HTTPS_PORT" { print substr($0, index($0, "=") + 1); exit }' "$script_dir/.env")
             printf 'OSCAR URL: https://%s:%s/sensorhub/admin\n' "${local_hostname:-oscar.local}" "${local_port:-443}"
+            invoke_remote_access_subcommand status || true
+            invoke_rpm_proxy_subcommand status || true
         fi
         ;;
     logs)
@@ -1598,6 +1716,114 @@ case "$command_name" in
         ;;
     support-bundle)
         export_host_support_bundle
+        ;;
+    refresh-tls)
+        require_admin
+        require_supported_storage_host
+        assert_deployment_paths_safe
+        require_docker
+        configured || fail 'Run init before refreshing the TLS certificate.'
+        if [[ -z $hostname_value ]]; then
+            hostname_value=$(get_env_value OSCAR_HOSTNAME)
+            hostname_value=${hostname_value:-oscar.local}
+        fi
+        valid_hostname "$hostname_value" || fail "Invalid hostname or IP address: $hostname_value"
+        set_env_value OSCAR_HOSTNAME "$hostname_value"
+        port_value=$(get_env_value OSCAR_HTTPS_PORT)
+        port_value=${port_value:-443}
+        resolve_tls_sans "$hostname_value"
+        tls_backup_tmp=$(mktemp -d "${TMPDIR:-/tmp}/oscar-tls-refresh.XXXXXX")
+        chmod 0700 "$tls_backup_tmp"
+        cp -f "$script_dir/tls/server.crt" "$tls_backup_tmp/server.crt"
+        cp -f "$script_dir/tls/server.key" "$tls_backup_tmp/server.key"
+        rm -f "$script_dir/tls/server.crt" "$script_dir/tls/server.key"
+        if ! initialize_tls "$hostname_value"; then
+            cp -f "$tls_backup_tmp/server.crt" "$script_dir/tls/server.crt"
+            cp -f "$tls_backup_tmp/server.key" "$script_dir/tls/server.key"
+            protect_deployment_files
+            rm -rf -- "$tls_backup_tmp"
+            fail 'Failed to refresh TLS certificate; restored previous certificate/key.'
+        fi
+        rm -rf -- "$tls_backup_tmp"
+        protect_deployment_files
+        $add_hosts && add_local_hosts_mapping "$hostname_value"
+        if compose ps --status running gateway 2>/dev/null | grep -q gateway; then
+            compose up --detach --force-recreate --no-deps --no-build --pull never --wait gateway
+        fi
+        printf 'TLS certificate refreshed for %s.\n' "$hostname_value"
+        print_client_access_instructions
+        ;;
+    reset-admin-password)
+        require_admin
+        require_supported_storage_host
+        assert_deployment_paths_safe
+        require_docker
+        base_configured || fail 'Run init before resetting an OSCAR account password.'
+        assert_deployment_volume_ownership false
+        [[ $reset_user =~ ^[A-Za-z0-9._@-]{2,64}$ ]] || fail "Invalid --user value: $reset_user"
+        [[ ${reset_user,,} != svc-fed-* ]] || fail "Cannot reset password on federation service user: $reset_user"
+
+        new_reset_pw=''
+        if $reset_password_stdin; then
+            IFS= read -r new_reset_pw || fail 'No password supplied on standard input.'
+            new_reset_pw=${new_reset_pw%$'\r'}
+            ((${#new_reset_pw} >= 14)) || fail 'Break-glass password must contain at least 14 characters.'
+        else
+            [[ -t 0 ]] || fail 'Standard input is not a terminal; prompt interactively on a TTY or pass --password-stdin.'
+            printf "Break-glass local password recovery for OSCAR user '%s' (>= 14 characters; input is hidden).\n" "$reset_user" >&2
+            while true; do
+                read -r -s -p "New password for '$reset_user': " pw_one; printf '\n' >&2
+                read -r -s -p "Confirm password for '$reset_user': " pw_two; printf '\n' >&2
+                if ((${#pw_one} < 14)); then
+                    printf 'Use at least 14 characters.\n' >&2
+                    continue
+                fi
+                if [[ $pw_one != "$pw_two" ]]; then
+                    printf 'Passwords do not match.\n' >&2
+                    continue
+                fi
+                new_reset_pw=$pw_one
+                unset pw_one pw_two
+                break
+            done
+        fi
+
+        host_short=$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'linux-host')
+        if [[ -n ${SUDO_USER:-} ]]; then
+            reset_actor="sudo:${SUDO_USER}@${host_short}"
+        else
+            reset_actor="root@${host_short}"
+        fi
+
+        reset_tool_args=(--state-dir /var/lib/oscar --user "$reset_user" --actor "$reset_actor")
+        $reset_must_change && reset_tool_args+=(--must-change)
+
+        reset_receipt=''
+        if compose ps --status running oscar 2>/dev/null | grep -q oscar; then
+            if ! reset_receipt=$(printf '%s\n' "$new_reset_pw" | compose exec -T oscar java -classpath '/opt/oscar/lib/*' org.sensorhub.impl.security.session.BreakGlassAdminResetTool apply-live "${reset_tool_args[@]}"); then
+                if ! compose ps --status running oscar 2>/dev/null | grep -q oscar; then
+                    reset_receipt=$(printf '%s\n' "$new_reset_pw" | docker run --rm --interactive --network none --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev --workdir /var/lib/oscar --user 10001:10001 --entrypoint java --volume oscar_oscar_state:/var/lib/oscar "$(oscar_image)" -classpath '/opt/oscar/lib/*' org.sensorhub.impl.security.session.BreakGlassAdminResetTool apply-offline "${reset_tool_args[@]}")
+                else
+                    unset new_reset_pw
+                    fail 'Break-glass live password reset failed (inspect oscar container logs or stop OSCAR and retry).'
+                fi
+            fi
+        else
+            docker image inspect "$(oscar_image)" >/dev/null 2>&1 || fail "OSCAR container image $(oscar_image) is not loaded."
+            reset_receipt=$(printf '%s\n' "$new_reset_pw" | docker run --rm --interactive --network none --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev --workdir /var/lib/oscar --user 10001:10001 --entrypoint java --volume oscar_oscar_state:/var/lib/oscar "$(oscar_image)" -classpath '/opt/oscar/lib/*' org.sensorhub.impl.security.session.BreakGlassAdminResetTool apply-offline "${reset_tool_args[@]}")
+        fi
+        unset new_reset_pw
+
+        if command -v logger >/dev/null 2>&1; then
+            logger -p authpriv.notice -t oscar-security "BREAK_GLASS_PASSWORD_RESET user=${reset_user} actor=${reset_actor}" 2>/dev/null || true
+        fi
+
+        reset_mode=$(printf '%s' "$reset_receipt" | sed -n 's/.*"mode":"\([^"]*\)".*/\1/p')
+        revoked_cnt=$(printf '%s' "$reset_receipt" | sed -n 's/.*"revokedSessions":\([0-9]*\).*/\1/p')
+        printf "\nBreak-glass password reset applied for '%s' (mode=%s, revokedSessions=%s, actor=%s).\n" \
+            "$reset_user" "${reset_mode:-applied}" "${revoked_cnt:-0}" "$reset_actor"
+        printf 'Audit trail recorded in /var/lib/oscar/.moduledata/security-break-glass-audit.log and host syslog.\n'
+        printf 'Sign in at the browser login page, then enroll a new Passkey for the current domain under Users & Access -> My Account.\n'
         ;;
     upgrade)
         require_admin
@@ -1641,6 +1867,15 @@ case "$command_name" in
         bash "$script_dir/oscar-storage.sh" upgrade-state
         ensure_storage_database_features
         finalize_pending_fresh_init
+        [[ -f "$script_dir/oscar-usb-backup.sh" ]] && bash "$script_dir/oscar-usb-backup.sh" install-agent >/dev/null 2>&1 || true
+        [[ -f "$script_dir/oscar-sandbox.sh" ]] && bash "$script_dir/oscar-sandbox.sh" install-agent >/dev/null 2>&1 || true
+        [[ -f "$script_dir/oscar-update.sh" ]] && bash "$script_dir/oscar-update.sh" install-agent >/dev/null 2>&1 || true
+        if [[ -f $script_dir/offline-images.tar ]]; then
+            invoke_remote_access_subcommand sync
+        else
+            invoke_remote_access_subcommand sync --rebuild
+        fi
+        invoke_rpm_proxy_subcommand build-image-only || true
         printf 'Upgrade deployment completed. Persistent OSCAR and PostgreSQL volumes were retained.\n'
         ;;
     *) fail "Unknown command: $command_name" ;;

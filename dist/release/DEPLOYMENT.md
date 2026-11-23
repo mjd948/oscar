@@ -1,18 +1,89 @@
 # OSCAR Administrator Guide
 
-OSCAR runs as three Docker Compose services: an HTTPS gateway, the non-root OSCAR application, and PostgreSQL/PostGIS. The selected HTTPS port is published to the host, and port 80 redirects requests to HTTPS. PostgreSQL has no host port.
+OSCAR runs as three core Docker Compose services: an HTTPS gateway, the non-root OSCAR application, and PostgreSQL/PostGIS (plus optional isolated Compose services for Zero-Trust remote access `compose.octelium.yaml`, the ephemeral `:8444` training sandbox `compose.sandbox.yaml`, and the side-by-side Central Alarm Station Rapiscan RPM fan-out proxy `compose.rpm-proxy.yaml`; see [RPM_EDGE_PROXY_GUIDE.md](../../docs/RPM_EDGE_PROXY_GUIDE.md)). The selected HTTPS port is published to the host, and port 80 redirects requests to HTTPS. PostgreSQL has no host port.
 
 Start with [QUICKSTART.md](QUICKSTART.md) for installation, and see [VIDEO_GUIDES.md](../../docs/VIDEO_GUIDES.md) for concise 1080p captioned screen recordings covering initialization ([Module 01](https://github.com/ORNL/oscar-video-guides/blob/main/videos/01-deployment-init-and-credentials.mp4)), clean-directory upgrades ([Module 02](https://github.com/ORNL/oscar-video-guides/blob/main/videos/02-clean-directory-upgrade.mp4)), archive/backup verification ([Module 03](https://github.com/ORNL/oscar-video-guides/blob/main/videos/03-archive-and-snapshot-backup.mp4)), and SensorHub Admin configuration ([Modules 04–07](../../docs/VIDEO_GUIDES.md#04-admin-oscar-service-and-custom-codes)). This guide documents deployment choices and routine administration.
+
+## November 2026 NGINX security update
+
+The gateway and optional remote-access tunnel now use `nginx/nginx-unprivileged:1.30.7-alpine`. NGINX identifies this version as fixed for the November 18 vulnerabilities, including HTTP/2 CVE-2026-123007 and CVE-2026-123633 and TLS 1.3 CVE-2026-118899. See the [upstream security advisories](https://nginx.org/en/security_advisories.html).
+
+Build and distribute this change as a new release; do not replace an already published release or image tag. Regenerate offline bundles so their `offline-images.tar` contains the patched gateway. The offline builders use new cache filenames to avoid reusing archives from before this update.
+
+For an existing installation, follow the supported clean-directory **Upgrade** procedure with that new release. Include the optional tunnel rebuild when it is enabled. Updating this source checkout or downloading a new image alone does not replace running containers. After the upgrade, run the following from the deployed release directory:
+
+```sh
+docker compose exec gateway nginx -v
+docker compose exec gateway nginx -t
+```
+
+Confirm the running gateway reports `nginx/1.30.7` (or a newer patched version), passes its configuration check, and serves HTTPS, Viewer/Admin routes, and live video. HTTP/2 and TLS 1.3 remain enabled with the patched binary.
 
 ## Supported deployment and operation hosts
 
 - Windows 11 x86-64 with Docker Desktop and WSL 2
 - Ubuntu Server 24.04 x86-64 with Docker Engine and the Compose plugin
 
-The 3.11.0 storage profile fails closed on macOS because Docker Desktop for Mac cannot satisfy this
+The 3.11.10 storage profile fails closed on macOS because Docker Desktop for Mac cannot satisfy this
 release's tested bind-root ownership and recovery-media isolation contract. Use Ubuntu or Windows
 for initialization and operation; a Mac may still be used for source inspection or non-deployment
 development.
+
+### Recommended hardware and capacity sizing
+
+OSCAR resource consumption divides into **baseline steady-state ingest** and **simultaneous occupancy bursts**:
+
+- **Steady-state RPM & H.264 camera ingest (network + sequential disk I/O bound):** Each RPM streams `5 Hz` radiation telemetry (`~10–30 Kbps` per lane), while RTSP cameras are ingested through the built-in loopback `mediamtx` proxy using **H.264 packet stream-copy (`-c copy`)** without CPU video re-encoding during monitoring or occupancy MP4 clip recording. Baseline camera load therefore scales primarily with **total camera bitrate and sequential NVMe write throughput**.
+- **Simultaneous occupancy & operator review bursts (CPU + RAM bound):** CPU cores and memory headroom are consumed when multiple lanes enter occupancy concurrently (triggering asynchronous two-pass five-JPEG keyframe extraction in `VideoRetention`, `30`-minute `PARQUET_PRIMARY` ZSTD archive exports, active shared live HLS viewer streams, and optional per-lane Tier-0 oriented `CenterNet` ROI + native-frame deskew + `PP-OCRv3` CTC / INT8 `PARSeq` + Tier-1/2 `960px -> 1600px` DBNet container/license-plate OCR at `~1.13 s` mean clip latency).
+
+#### Baseline reference hardware & scenario sizing matrix
+
+A **Baseline Field Server** (`8` physical x86-64 cores / `16` threads, `32 GB` RAM, `1–2 TB` TLC/enterprise NVMe SSD, dual `1 GbE` NICs for operator LAN + dedicated sensor VLAN) supports a **5-lane OCR portal** on either Ubuntu Server 24.04 LTS or Windows 11 + WSL 2 with wide headroom, and scales to a **50-lane portal** on bare-metal Ubuntu Server 24.04 LTS (`12–16` physical P-cores recommended when all `50` lanes run continual OCR):
+
+| Deployment Profile | RPM Count | Recommended Camera & OCR Stream Pairing (`2` Cameras/Lane Default) | Recommended Host OS | CPU (Physical x86-64 Cores) | System RAM | Primary Storage + Recommended External USB NVMe Backup | Sensor Network |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **Type A — 5-Lane Gate / Regional Portal** *(covers `1–8` lanes @ `100%` OCR)* | `5` RPMs (`1–8` range) | `10` cameras: `5× 1080p @ 15 fps` (`1 s` GOP, OCR angle) + `5× 720p @ 15 fps` (overview) — or `10× 1080p @ 15 fps` (`~18–35 Mbps` ingress) | Ubuntu Server 24.04 LTS or Windows 11 Pro + WSL 2 | `8` cores (`16` threads) baseline (`4` cores / `8` threads min) | `32 GB` baseline (`16 GB` min; `12–16 GB` `.wslconfig` cap on Windows) | `1 TB` internal NVMe SSD (`512 GB` min; `~72–92 GiB` over 10 yrs) **+ `1 TB` external USB 3.2 Gen 2 NVMe SSD (`OSCAR_BACKUP`)** | `1 GbE` dedicated sensor VLAN |
+| **Intermediate / Medium Portal** | `9–24` RPMs | `18–48` cameras (`1× 1080p @ 15 fps` OCR + `1× 720p @ 15 fps` overview per lane) | Ubuntu Server 24.04 LTS (preferred; required when `> 8` lanes run OCR) | `8–12` physical cores (`16–24` threads) | `32 GB` | `1–2 TB` TLC / enterprise internal NVMe SSD **+ `1–2 TB` external USB 3.2 Gen 2 NVMe SSD (`OSCAR_BACKUP`)** | Dedicated `1 GbE` sensor VLAN |
+| **Type B — 50-Lane Major Port of Entry** *(covers `25–50` lanes @ `100%` OCR)* | `50` RPMs (`25–50` range) | `100` cameras: `50× 1080p @ 15 fps` (`1 s` GOP, OCR angle) + `50× 720p @ 15 fps` (overview) (`~175–300 Mbps` ingress) | **Ubuntu Server 24.04 LTS bare-metal strongly recommended** *(see OS comparison below)* | `12–16+` physical P-cores (`8` cores min for alarm-only OCR) | `32–64 GB` | `2–4 TB` high-endurance internal NVMe SSD (`~695–915 GiB` over 10 yrs) **+ `2 TB` external USB 3.2 Gen 2 NVMe SSD (`OSCAR_BACKUP` in `continual` mode)** | `1–2.5 GbE`+ dedicated sensor NIC |
+| **Optional Central Federation Hub ([`ORNL/oscar-federation-hub`](https://github.com/ORNL/oscar-federation-hub))** | Multi-site Zero-Trust tunnel + SSO | Outbound HTTPS `443` from site `oscar-tunnel` connectors | Ubuntu 24.04 LTS VM (cloud or on-prem, public DNS + `443`) | `2+ vCPUs` | **`8 GB` RAM** for Mode A (`--with-authentik` browser SSO console; ~`2.8 GiB` active RSS); **`4 GB` RAM** for CLI-only Mode B | `40+ GB` SSD | Public IPv4 (`TCP 80/443`, `UDP 443`) |
+
+> **Standard Bill-of-Materials Recommendation — Attach a Dedicated `1–2 TB` External USB 3.2 Gen 2 NVMe SSD (`OSCAR_BACKUP`) on Every Physical Portal:**
+> Keeping a rugged `1–2 TB` external USB 3.2 Gen 2 NVMe SSD (for example, Samsung T7 Shield or Crucial X9/X10 Pro on a dedicated `15 W` USB-C port or powered USB 3.2 hub) plugged into the server in **`continual` (`15`-minute) mode** via `/usb-backups` is strongly recommended for all physical deployments—especially `9–50` lane sites:
+> 1. **Hardware-failure isolation:** Stores `AES-256-CBC` encrypted secrets and `SHA-256`-verified PostgreSQL + Parquet + JPEG packs on physically separate flash media so an internal NVMe controller failure, power surge, or OS failure never loses multi-year portal history.
+> 2. **Seconds-fast, `0.0 s`-downtime pre-upgrade backups:** Whenever an `OSCAR_BACKUP` USB NVMe drive is attached, the Zero-Login GUI System Updater (`/users?tab=update`) and `oscar update --backup-first` automatically run online incremental `usb-backup sync` (`~5–20 s`, `0.0 s` portal downtime) instead of stopping the portal to rebuild a multi-tens-of-gigabyte cold `oscar-state.tar.gz` snapshot.
+> 3. **Turnkey bare-metal server swap:** Pairs directly with the `54 KB` `oscar-*-autoinstall-usb-creator.zip` installer stick—boot a replacement server from the Autoinstall USB, plug in the site's existing `OSCAR_BACKUP` NVMe SSD, and restore all lanes, users, Passkeys, `.pmtiles`, and multi-year Parquet archives in one command. See [`docs/CONTINUAL_AND_USB_BACKUP_GUIDE.md`](../../docs/CONTINUAL_AND_USB_BACKUP_GUIDE.md).
+
+#### Camera H.264 resolution, frame rate, GOP, and OCR optical framing recommendations
+
+Because the settled hybrid OCR pipeline (`sensorhub-process-ocr`) detects oriented stencil/plate boxes at `640×384` and then **extracts and `AffineTransform`-deskews crops directly from the native camera frame** before `48px` CTC / `32×128` `PARSeq` recognition and split/boxed check-digit recovery (with Tier-2 full-frame DBNet capped at `1600px`), **`1920×1080` (`1080p`) @ `15 fps` with a `1 s` closed GOP** is the optimal OCR camera stream profile, paired with **`1280×720` (`720p`) @ `15 fps`** on non-OCR situational-awareness cameras:
+
+| Camera Stream Profile | Typical H.264 Bitrate (per Camera) | Aggregate Ingress (`5` Lanes = `10` Cams / `50` Lanes = `100` Cams) | Operational & OCR Guidance |
+| --- | --- | --- | --- |
+| **`1920×1080` (`1080p`) @ `15 fps`**, **`1 s` (`15`-frame) closed GOP** | `~2.5–4.0 Mbps` | `~25–40 Mbps` / `~250–400 Mbps` | **Recommended standard for all Container & License Plate OCR cameras** and primary evidentiary angles. Frame lens zoom so ISO 6346 owner/serial/boxed check-digit stencils measure **`>= 24–32 px` tall** (`>= 18–24 px` for license plates) with max exposure **`<= 1/500 s`** (`<= 2 ms`) to eliminate motion blur without doubling packet rate. Supports up to `8` cameras per lane. |
+| **`1280×720` (`720p`) @ `15 fps`**, `1–2 s` closed GOP | `~1.0–2.0 Mbps` | `~10–20 Mbps` / `~100–200 Mbps` | **Recommended companion stream for non-OCR overview / side-profile cameras.** Pairing `1× 1080p @ 15 fps` (OCR) + `1× 720p @ 15 fps` (overview) per lane holds 50-lane/100-camera ingress to `~175–300 Mbps` (`< 30%` of `1 GbE`) and keeps average retained JPEG size near `~90–100 KiB/frame`. |
+| **`1920×1080` (`1080p`) @ `30 fps`**, `1 s` (`30`-frame) closed GOP | `~4.0–8.0 Mbps` | `~40–80 Mbps` / `~400–800 Mbps` | Reserve for un-gated high-speed (`> 25 mph / 40 km/h`) free-flow OCR lanes; roughly doubles RTSP packet rate, 24-hour MP4 grace storage, and two-pass JPEG decode work compared to `15 fps`. |
+| **`2560×1440` (`1440p`) @ `15 fps`**, `1 s` closed GOP | `~4.0–6.0 Mbps` | `~40–60 Mbps` / `~400–600 Mbps` | Optional wide-FOV OCR alternative when a single distant mast camera must cover both the upper container rear stencil and lower bumper plate while keeping character height `>= 24 px`. |
+| **`3840×2160` (`4K`) @ `15–30 fps`** | `~12–25+ Mbps` | Not recommended above `8–16` total cameras | Supported (`writeQueueSize: 4096`), capped at `2` cameras per lane by the `120 MP` per-event gallery ceiling. Because Tier-2 DBNet downscales full frames above `1600px`, `4K` adds `4×` decode/disk cost without improving OCR over a properly framed `1080p` sub-stream. |
+
+Always configure **H.264 (`Main` or `High` profile, CBR or capped VBR)** with a **`1–2` second closed GOP** (`1 s` / `15` frames recommended on OCR cameras) and disable camera Dynamic FPS / Smart Codec GOP stretching (`10+ s` keyframe gaps delay live HLS startup and short-occupancy keyframe capture). When `ocrConfig` is enabled on undersized hardware, `OcrResourceGovernor` automatically defers or sheds OCR inference above `85%` host CPU load or `< 15%` free JVM heap so radiation alarm capture and adjudication are never starved.
+
+#### Projected multi-year storage & query latency (`5` Lanes vs. `50` Lanes, OCR enabled)
+
+Under realistic portal traffic (`100` occupancies/lane/day, `5%–10%` radiation alarm rate, `1× 1080p @ 15 fps` OCR camera + `1× 720p @ 15 fps` overview camera per lane, `PARQUET_PRIMARY`, 24-hour MP4 grace, `secondaryFrameRetentionDays = 30` pruning 4 of 5 JPEGs so only `frame-03.jpg` persists long-term, and `ocrCropRetentionDays = 365`):
+
+| Reference Deployment | Steady `oscar` `anon` RAM / `postgres` RSS | Steady PostgreSQL Disk (Logical / Physical+WAL) | Net Annual Cold Growth (`Parquet + frame-03.jpg + CSVs`) | **Year 1** Total Disk | **Year 5** Total Disk | **Year 10** Total Disk | Bounded Hot/Cold Query Latency (Year 1 → Year 10) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **Type A — 5 Lanes / 10 Cameras (`5/5` OCR)** | `~1.4–2.0 GiB` / `~0.5–0.7 GiB` | `~0.35 GiB` / `~0.8 GiB` | **`~7.0–9.0 GiB / yr`** (`~4.8 GiB` Parquet + `~1.8–3.6 GiB` JPEGs + `~0.4 GiB` CSV/meta) | **`~9–11 GiB`** | **`~37–47 GiB`** | **`~72–92 GiB`** | **`25–140 ms`** (Ubuntu) / **`95–450 ms`** (Win 11 WSL 2); `365d` report `< 1–2 s` |
+| **Type B — 50 Lanes / 100 Cameras (`50/50` OCR)** | `~1.8–2.3 GiB` / `~0.8–1.1 GiB` | `~0.63 GiB` / `~1.5 GiB` | **`~68–90 GiB / yr`** (`~45–50 GiB` Parquet + `~18–36 GiB` JPEGs + `~3.5 GiB` CSV/meta) | **`~81–105 GiB`** | **`~353–465 GiB`** | **`~693–915 GiB`** | **`40–185 ms`** (Ubuntu bounded windows & 15d SQL summaries); `365d` report `~2–5 s/yr` |
+
+*(See [`docs/RELEASE_NOTES_AND_UPGRADE_GUIDE.md`](../../docs/RELEASE_NOTES_AND_UPGRADE_GUIDE.md#3-multi-year-system-resources--performance-projections-5-lane--50-lane-reference-deployments-with-hybrid-ocr) for the full Day 1 → Year 10 subsystem breakdown.)*
+
+#### Native Ubuntu Server 24.04 LTS vs. Windows 11 + WSL 2 at scale
+
+Under sustained **50-lane + 100-camera + 50-lane OCR** `PARQUET_PRIMARY` operation, `cgroup v2` telemetry (`memory.stat`) shows the `oscar` container holds steady at **`~1.95–2.24 GiB` of true anonymous process memory (`anon` JVM heap + ONNX Runtime + FFmpeg/MediaMTX)** and `postgres` at **`~0.65–0.95 GiB` RSS**. Raw `docker stats` `MemUsage` typically displays `~5.2–6.2 GiB` because Linux accounts `~3.0–4.3 GiB` of clean, kernel-reclaimable filesystem page cache (`file`) alongside `anon` memory (plus `Local9pParquetCache`'s bounded `2–8 GiB` native `ext4` Parquet disk cache on Windows WSL 2). Both host platforms pass full functional and endurance validation, with an important architectural difference at high lane counts:
+
+- **Ubuntu Server 24.04 LTS (native Linux Docker bridge + native `ext4` NVMe):** Delivers metronome-steady `200 ms` (`5 Hz`) RPM sample ingestion across all `50` lanes with zero TCP reader bunching (`~23%` 7-day mean CPU on `8` threads, `40.7 ms` archived `resultTime=latest`, and `140–147 ms` cold/mixed Parquet queries). **Choose Ubuntu Server 24.04 bare-metal for `25–50+` lane portals, `50–100` camera deployments, or `> 8` OCR lanes.**
+- **Windows 11 + Docker Desktop / WSL 2:** Routes inbound sensor TCP streams through Docker Desktop's user-space network proxy and virtualized Hyper-V/`9p` storage layers (`~2.5–3×` higher cold-query latency than native `ext4`). At `50`-lane + `100`-camera concurrency on compact workstation hardware, brief (`0.4–1.0 s`) host I/O or proxy scheduling pauses can bunch `2–5` consecutive `5 Hz` RPM samples into micro-bursts on live detector plots without dropping samples or delaying alarms. **Windows 11 + WSL 2 is well-suited for Type A (`1–8` lane, e.g. `5–6` lane) portals with `100%` per-lane OCR (`~1.95 GiB` `anon` RAM, `~6%` PostgreSQL CPU, and zero `5 Hz` RPM sample bunching)** while federating higher-density portals onto an Ubuntu Server 24.04 bare-metal HQ node (`25–50` lanes @ `100%` OCR). If Windows 11 is required above `20` non-OCR lanes, use a desktop/workstation CPU with `8–12+` physical performance cores, `32–64 GB` host RAM (`20–32 GB` assigned to `%USERPROFILE%\.wslconfig`), dedicated internal NVMe storage (never external USB drives for active volumes), and run `.\oscar.bat prepare-host`.
 
 ### Windows 11 unattended server preparation
 
@@ -82,6 +153,26 @@ pass `-ConfigureLanHttpsFirewall` (or `.\oscar.bat prepare-host -ConfigureLanHtt
 switch connected wired `802.3` Ethernet adapters to `Private` and configure a scoped
 `OSCAR-HTTPS-Gateway-In` rule (`TCP 443,80`, `Private,Domain`, `LocalSubnet` and `100.64.0.0/10`).
 
+### Ubuntu 24.04 unattended server preparation, hotel-room staging & air-gapped cutover
+
+Ubuntu Server 24.04 LTS defaults to a `100 GiB` `ubuntu-lv` root logical volume even on multi-terabyte NVMe drives, offers a Snap-confined `docker` installer checkbox that breaks bind mounts, leaves `unattended-upgrades` or desktop sleep targets unguarded, and can stall boot for 120 seconds on air-gapped multi-NIC portals without internet or DHCP. Run `configure-ubuntu-host.sh` through `oscar.sh` before or after `init` (and see [UBUNTU_FIELD_SETUP_GUIDE.md](../../docs/UBUNTU_FIELD_SETUP_GUIDE.md) plus `ubuntu/` for declarative `autoinstall`, Netplan, and Ansible templates, bootable USB links, and unknown-IP sensor discovery):
+
+```sh
+sudo bash oscar.sh host-check
+sudo bash oscar.sh prepare-host --expand-lvm --configure-ufw
+```
+
+When pre-staging a server off-site (for example, on hotel Wi-Fi/DHCP with the site schematic in hand before traveling to an offline, no-DHCP portal):
+
+```sh
+sudo bash oscar.sh identify-nics --watch      # plug/unplug a cable to label physical RJ45 ports
+sudo bash oscar.sh stage-site-network         # stages /etc/oscar/staged-netplan/90-oscar-site.yaml without dropping hotel DHCP
+sudo bash oscar.sh init                       # embeds both current & staged site static IPs into tls/server.crt
+# ...after arriving on-site and connecting switch cables:
+sudo bash oscar.sh apply-site-network         # backs up DHCP Netplan, applies static IPs, refreshes TLS SANs & verifies health
+sudo bash oscar.sh discover-devices --interface enp2s0   # optional: scan wire for unknown camera/RPM IPs
+```
+
 ## Administrative CLI
 
 Use `oscar.bat` on Windows and `oscar.sh` on Ubuntu. The Windows launcher invokes Windows
@@ -95,9 +186,13 @@ The menu accepts the same command and options shown below. For example, enter `i
 | --- | --- | --- |
 | Initialize | `oscar.bat init` | `sudo bash oscar.sh init` |
 | Check prerequisites | `oscar.bat check` | `sudo bash oscar.sh check` |
-| Audit Windows 11 server power/USB readiness | `oscar.bat host-check` | Not applicable |
-| Apply Windows 11 unattended server settings | `oscar.bat prepare-host` | Not applicable |
-| Verify offline media | `oscar.bat verify` | Site-prepared bundles only: `sudo bash oscar.sh verify` |
+| Audit host power/LVM/NIC readiness | `oscar.bat host-check` | `sudo bash oscar.sh host-check` |
+| Apply unattended server settings | `oscar.bat prepare-host` | `sudo bash oscar.sh prepare-host --expand-lvm` |
+| Identify physical NIC ports | Not applicable | `sudo bash oscar.sh identify-nics --watch` |
+| Stage / apply / roll back static site IPs | Not applicable | `sudo bash oscar.sh stage-site-network` / `apply-site-network` / `rollback-network` |
+| Discover unknown RPM & camera IPs | Not applicable | `sudo bash oscar.sh discover-devices --interface NIC` |
+| Refresh self-signed TLS SANs after IP change | Not applicable | `sudo bash oscar.sh refresh-tls` |
+| Verify offline media | `oscar.bat verify` | `sudo bash oscar.sh verify` |
 | Start | `oscar.bat start` | `sudo bash oscar.sh start` |
 | Stop | `oscar.bat stop` | `sudo bash oscar.sh stop` |
 | Restart | `oscar.bat restart` | `sudo bash oscar.sh restart` |
@@ -109,6 +204,7 @@ The menu accepts the same command and options shown below. For example, enter `i
 | Archive status | `oscar.bat archive status` | `sudo bash oscar.sh archive status` |
 | Archive integrity | `oscar.bat archive verify` | `sudo bash oscar.sh archive verify` |
 | Retention holds | `oscar.bat archive hold list` | `sudo bash oscar.sh archive hold list` |
+| Ephemeral Training Sandbox (`:8444`) | `oscar.bat sandbox start\|status\|reset\|stop` | `sudo bash oscar.sh sandbox start\|status\|reset\|stop` |
 
 Directly invoked mutating commands require an elevated Windows PowerShell 5.1 window on Windows or root privileges on Ubuntu. The Windows menu obtains elevation through UAC, and the Ubuntu menu invokes `sudo` when a selected command requires it.
 
@@ -152,7 +248,7 @@ Windows self-signed LAN/Tailscale example with additional stable names:
 
 ```powershell
 .\oscar.bat init -Hostname oscar-site.example.org -Port 443 `
-    -TlsSan 192.168.0.61,oscar-site.example-tailnet.ts.net
+    -TlsSan 198.51.100.20,oscar-site.example-tailnet.ts.net
 ```
 
 Ubuntu equivalent:
@@ -167,7 +263,7 @@ Ubuntu self-signed LAN/Tailscale example with additional stable names:
 
 ```sh
 sudo bash oscar.sh init --hostname oscar-site.example.org --port 443 \
-    --tls-san 192.168.0.57 \
+    --tls-san 198.51.100.10 \
     --tls-san oscar-site.example-tailnet.ts.net
 ```
 
@@ -196,15 +292,75 @@ self-signed identity; it does not make an unlisted hostname or IP valid.
 - Windows client, from an elevated PowerShell window:
   `certutil -addstore -f Root .\server.crt`
 - Ubuntu client: copy it to `/usr/local/share/ca-certificates/oscar-site.crt`, then run
-  `sudo update-ca-certificates`. A browser configured with a separate certificate store must also
-  import the public certificate there.
-- macOS client: use Keychain Access to add `server.crt` to the System keychain and mark it trusted,
-  after verifying the fingerprint.
+  `sudo update-ca-certificates`. For Chrome or Chromium on Linux (which reads NSS `~/.pki/nssdb`
+  rather than `/etc/ssl/certs`), also import it once per desktop user:
+  `certutil -d "sql:$HOME/.pki/nssdb" -A -t "CT,C,C" -n "OSCAR Site" -i ./server.crt` (`libnss3-tools`).
+- macOS client: run
+  `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ./server.crt`
+  (or use Keychain Access to add `server.crt` to the System keychain and mark it **Always Trust**),
+  after verifying the fingerprint. Note that Apple macOS and iOS enforce a maximum `825`-day
+  validity period on leaf TLS server certificates (`ERR_CERT_VALIDITY_TOO_LONG`); see the site
+  Root CA snippet below whenever macOS/iOS browsers or Touch ID / Face ID Passkeys are used on a LAN.
+
+### Enabling local and LAN WebAuthn Passkeys (multi-node hostnames, DNS/hosts & TLS trust)
+
+Browser WebAuthn Passkeys (`navigator.credentials.create` / `navigator.credentials.get`) enforce two
+strict browser-side prerequisites that do not apply to local PBKDF2 password sign-in:
+
+1. **A domain name (not a raw IP literal):** Opening `https://198.51.100.10/` continues to support
+   username + password sign-in (including phone-free facilities), but browsers disable WebAuthn on
+   IPv4/IPv6 literals. Always open OSCAR via a domain name such as `https://oscar.local`,
+   `https://oscar.ubuntu`, or `https://oscar.win`. When operating **multiple OSCAR servers on the
+   same LAN**, give each node its own distinct hostname during `init` (for example,
+   `sudo bash oscar.sh init --hostname oscar.ubuntu` on node 1 and
+   `.\oscar.bat init -Hostname oscar.win` on node 2) so host entries, TLS certificates, and Passkey
+   relying-party IDs (`rpId`) never collide.
+2. **A trusted HTTPS certificate without bypassed browser warnings:** Clicking past an untrusted
+   certificate warning puts Chrome, Edge, and Safari into a degraded TLS state that blocks Passkey
+   registration and sign-in. Complete the three steps below once per site so Passkeys work both
+   locally on the host and across every LAN workstation or phone:
+
+- **Step 1 — Resolve the node's domain name locally and across the LAN:**
+  - *On the OSCAR host itself (offline-ready):* `oscar init` automatically maps `127.0.0.1 <hostname>`
+    in `/etc/hosts` (`C:\Windows\System32\drivers\etc\hosts` on Windows) so local Passkey sign-in works
+    even when the LAN cable is unplugged.
+  - *Whole-LAN (recommended for multiple laptops and phones):* Add Local DNS (`A`) records on the site
+    router or internal DNS server mapping each node's hostname to its static LAN IP (for example,
+    `oscar.ubuntu -> 198.51.100.10` and `oscar.win -> 198.51.100.20`).
+  - *Per-workstation fallback (air-gapped LAN without router DNS access):* Map the hostname(s) in each
+    client workstation's `hosts` file:
+    - macOS / Linux: `printf '198.51.100.10\toscar.ubuntu\n198.51.100.20\toscar.win\n' | sudo tee -a /etc/hosts`
+    - Windows (elevated PowerShell):
+      `Add-Content -Path C:\Windows\System32\drivers\etc\hosts -Value "198.51.100.10`toscar.ubuntu"; ipconfig /flushdns`
+- **Step 2 — Issue an `<= 825`-day LAN Root-CA certificate when macOS/iOS clients or multiple nodes are present (optional on Windows/Linux-only single nodes):**
+  Generate a one-time site Root CA (`oscar-lan-root-ca.crt`), sign an `820`-day leaf certificate
+  containing all DNS and IP Subject Alternative Names (`SAN`s) for each node, and shred the Root CA
+  private key immediately so no extra secret needs to be stored:
+  ```sh
+  openssl req -x509 -newkey rsa:4096 -sha256 -nodes -days 3650 \
+    -subj "/O=OSCAR Local Deployment/CN=OSCAR Local LAN Root CA" \
+    -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" \
+    -keyout ca.key -out oscar-lan-root-ca.crt
+  openssl req -newkey rsa:3072 -nodes -subj "/CN=oscar.ubuntu" -keyout server.key -out server.csr
+  printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:oscar.ubuntu,DNS:oscar.local,DNS:localhost,IP:198.51.100.10,IP:127.0.0.1\n' > server.ext
+  openssl x509 -req -in server.csr -CA oscar-lan-root-ca.crt -CAkey ca.key -CAcreateserial \
+    -out leaf.crt -days 820 -sha256 -extfile server.ext
+  cat leaf.crt oscar-lan-root-ca.crt > server.crt
+  shred -u ca.key 2>/dev/null || rm -f ca.key
+  ```
+  Pass `--tls-mode import --certificate server.crt --private-key server.key` during `init`, or to
+  rename an **existing** deployment without re-initializing or losing data: update
+  `OSCAR_HOSTNAME=oscar.ubuntu` in `.env`, copy `server.crt` and `server.key` into `tls/`, update
+  `127.0.0.1 oscar.ubuntu` in the host's `hosts` file, and run
+  `docker compose up -d --force-recreate gateway`.
+- **Step 3 — Trust the public certificate (`oscar-lan-root-ca.crt` or `tls/server.crt`) once on each client device:**
+  Use `certutil -addstore -f Root .\oscar-lan-root-ca.crt` on Windows, `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain oscar-lan-root-ca.crt` on macOS, or `update-ca-certificates` + `certutil -d "sql:$HOME/.pki/nssdb"` on Linux. One shared `oscar-lan-root-ca.crt` trusts every OSCAR node signed by that batch. Because WebAuthn scopes Passkeys to the exact domain (`rpId`), a Passkey enrolled at `https://oscar.ubuntu` signs in locally and across the LAN via `https://oscar.ubuntu`; if the same user also connects through a public Zero-Trust tunnel domain (`https://site.example.org`), they simply click **Add a Passkey or Security Key** once on that tunnel URL under the same OSCAR account.
 
 For ordinary LAN operation, create a site DNS record pointing the configured hostname at the
 OSCAR host's static address. A per-workstation hosts entry is an acceptable isolated-test fallback,
 but it does not scale and must map the same hostname that appears in the certificate. Direct access
-such as `https://192.168.0.57/` requires that exact IP SAN; accepting a warning for a certificate
+such as `https://198.51.100.10/` requires that exact IP SAN; accepting a warning for a certificate
 issued only to `oscar.local` is not a supported substitute.
 
 The gateway publishes the configured HTTPS port on the host interfaces by default. Scope the host
@@ -291,9 +447,103 @@ tls/server.crt
 tls/server.key
 ```
 
-Docker Compose mounts secrets read-only. On Ubuntu, the setup CLI makes `secrets` and `tls` mode `0700`, with contained files readable by the deliberately non-root services. On Windows, it restricts the directories to the installing administrator and `SYSTEM` while preserving container-readable, read-only mounts.
+Docker Compose mounts secrets read-only. On Ubuntu, the setup CLI makes `secrets` and `tls` mode `0700`, with contained files readable by the deliberately non-root services. On Windows, it restricts the directories to the installing administrator and `SYSTEM` while preserving container-readable, read-only mounts. During a fresh `init`, as soon as OSCAR hashes the initial administrator password into `/var/lib/oscar/config.json` (`PBKDF2WithHmacSHA256`, 310,000 iterations), setup overwrites `secrets/oscar-admin-password.txt` with a non-empty `# CONSUMED_AT_INIT: <UTC>` marker so the plaintext bootstrap password does not remain on disk (unless `OSCAR_KEEP_BOOTSTRAP_SECRET=true` is explicitly exported for automated test harnesses).
 
-The application configuration is copied into the `oscar_state` volume on first startup. Runtime configuration saves update only that persistent copy. Application libraries and viewer assets remain read-only in the image. PostgreSQL data is stored in the `postgres_data` volume. OSCAR 3.11.0 uses a long-lived host bind for the primary Parquet cold tier (`OSCAR_ARCHIVE_DIR`) so multi-year archives can reside on a dedicated host volume, survive `docker compose down -v` or Docker Desktop resets, and undergo direct host-side ACL, `.oscar-storage-root`, and offline backup verification; on Windows WSL 2 `9p`/`drvfs` mounts, OSCAR automatically caches SHA-256-verified Parquet generations inside a disk-proportional (`2–8 GiB`, excluded from backups) native `ext4` cache (`/var/lib/oscar/.cache/oscar-9p-parquet-cache`) so repeat historical queries avoid cross-VM `9p` read amplification without giving up host-bind durability. Keep `OSCAR_JAVA_OPTS` aligned with `.env.example` rather than forcing oversized `ForkJoinPool.common.parallelism` values on 4–8 core hosts. PostgreSQL runs with `archive_mode=off`, no external archive command, and no WAL bind. An existing `OSCAR_WAL_ARCHIVE_DIR` is preserved only to avoid deleting legacy data; current schema-v1/v2 restore does not use it. Fresh deployments set `OSCAR_BACKUP_MODE=disabled`; after explicit `single` opt-in, `OSCAR_BACKUP_DIR` is an operator-selected safe absolute host path that does not overlap the release or archive roots and is never mounted into a long-running service. A separate physical drive is recommended for failure isolation but is not required. A Docker named-volume backup or Parquet copy alone is incomplete.
+### Authentication, offline Passkeys, persistent sessions, SSO & remote-access tunnel
+
+OSCAR 3.11.10 manages operator and service identities without requiring command-line edits or external internet access:
+
+1. **Persistent "Stay Signed In Until Logout" Sessions:** Fresh configurations default `idleTimeoutSeconds = 0`, `absoluteTimeoutSeconds = 0`, `persistSessions = true`, and `allowKeepSignedIn = true` (`persistentCookieMaxAgeSeconds = 31536000`). Only SHA-256 digests of active `OSCAR_SESSION` cookies are stored in `/var/lib/oscar/.moduledata/oscar-identity.json` (`0600`), allowing dedicated gatehouse workstations to stay signed in across browser restarts, host reboots, and `oscar upgrade` until the user clicks **Log Out** or an administrator disables/revokes the account. Shared shift kiosks can switch to timed sessions (for example, `30m` idle / `8h` max) in **Users & Access -> Sign-In & SSO Policy**.
+2. **Non-IT Users & Access Console (`/users` in OSCAR Viewer):**
+   - **Self-Service Account, Offline Passkeys, Passwords & Tunnel Independence:** Every signed-in user can register phishing-resistant WebAuthn / FIDO2 Passkeys (`ES256` and `RS256` — Windows Hello, Touch ID, Face ID, or USB/NFC hardware security keys such as YubiKey) verified 100% locally by OSCAR with zero internet dependency, or update their local PBKDF2 password (`>= 14` characters) for phone-free facilities. **OSCAR local passwords and Octelium Zero-Trust tunnel credentials are two separate, independent authentication layers**: changing a user's OSCAR password does not require changing their Octelium password (and `oscar-tunnel` authenticates to the Hub with its own ServiceAccount token, so user password changes never affect tunnel uptime). WebAuthn requires opening OSCAR via a domain name (`https://oscar.local` or site DNS/Octelium hostname) rather than a raw IP address.
+   - **Users, Roles, Bulk CSV Enrollment & 1-Tap QR Startup Invites:** Administrators create, disable, reset, sign out, or delete individual `Administrator`, `Operator`, and read-only `Viewer` accounts (with last-admin lockout protection), or click **Bulk Enroll (CSV / Paste)** to upload or paste a roster (`username, role, display_name, views`) of up to 500 users at once. For every enrolled user, OSCAR generates a ready-to-send startup text message, a printable handout card, a single-use QR code & setup link (`/login/enroll?token=oscar_inv_...` — read-only on `GET` so SMS/chat link-preview bots never burn the invite, letting the user register a 1-tap Passkey or set their private password and land directly in their assigned Operational View), AND a readable fallback code for phone-free workstations (`/login/password-change`). `Operator` and `Viewer` accounts can be restricted to specific **Operational Views** (enforced both in `BasicSessionAuthenticator` for `/view/<slug>` and in OSCAR Viewer).
+   - **Scoped Federation Service Tokens (`oscar_fed_<shortId>_<secret>`) & Where to Use Them:** Administrators mint revocable `Viewer` or `Operator` tokens on the monitored node in **Users & Access -> Federation Tokens**, then open **Servers (`/servers?auth=bearer`)** on the monitoring/HQ OSCAR Viewer (or click **Open Servers Page (Federation Token Mode)** directly from the token banner) to paste the token into **Add Server -> Authentication Method: Federation Service Token** (`HTTPS`, port `443`), authenticating both ConSys/Bucket HTTP `Bearer` requests and HiveMQ WebSocket MQTT (`svc-fed-<shortId>`) without sharing human passwords.
+   - **Optional Corporate OIDC + PKCE & Trusted Zero Trust Tunnel SSO:** Sites connected to an enterprise IdP (Entra ID, Okta, Keycloak) or the turnkey self-hosted [`ORNL/oscar-federation-hub`](https://github.com/ORNL/oscar-federation-hub) (Octelium + Authentik) can enable OIDC + PKCE (`Sign in with Organization SSO` on `/login`, JWKS signature validation, optional private-CA PEM trust via `oidcTrustedCaCertificatePath`, IdP group-to-role mapping for `oscar-admins` / `oscar-operators`, and an optional **External SSO Admin Console URL** surfaced as a 1-click **Open Federated User Console** shortcut on `/users`) while keeping local Passkeys and passwords active whenever WAN connectivity drops. Deployments behind an authenticated Octelium Zero Trust tunnel (`oscar-remote-access.sh` / `oscar-remote-access.ps1`) can also enable Trusted Tunnel header SSO (`X-Octelium-User` and optional `X-Octelium-Groups` gated by a `>= 16`-character `X-Oscar-Tunnel-Secret`, mapping `oscar-admins` -> `Administrator`, `oscar-operators` -> `Operator`, and fallback -> `Viewer` without overwriting `local` accounts). During `oscar upgrade`, setup automatically runs `oscar-remote-access sync --rebuild` whenever `$STORAGE_ROOT/remote-access/octelium.env` and `octelium-token.txt` are present so `oscar-tunnel:${OSCAR_VERSION}` is rebuilt and recreated in lockstep, and `oscar backup` / `oscar restore` encrypt and restore `remote-access/` alongside `secrets/` and `tls/`.
+   - **Host Break-Glass Password Recovery & Passkey-Only Hostname/IP Migration (`reset-admin-password`):** WebAuthn / FIDO2 Passkeys are cryptographically bound to the Relying Party domain (`rpId`, such as `oscar.local` or `hub.example.org`). If an existing installation is restored onto a server under a **brand-new domain** and all administrators previously enrolled Passkeys without remembering a local fallback password, an authenticated host OS administrator (`root` / `sudo` on Ubuntu, or elevated `Administrator` on Windows 11) can set a new local PBKDF2 password (`>= 14` characters) with **zero portal downtime**:
+     ```sh
+     # Ubuntu Server 24.04 (interactive hidden TTY prompt; zero-downtime live apply when OSCAR is running)
+     sudo bash oscar.sh reset-admin-password [--user admin] [--must-change]
+     ```
+     ```powershell
+     # Windows 11 + WSL 2 (Administrator PowerShell; SecureString prompt)
+     .\oscar.bat reset-admin-password [-User admin] [-MustChange]
+     ```
+     For scripted break-glass automation, pipe the password over standard input (`--password-stdin` / `-PasswordStdin`); `reset-admin-password` intentionally **rejects** `--password` / `-Password` on the command line so plaintext secrets never leak into `ps`, `/proc/<pid>/cmdline`, or shell history. When `oscar` is running, `BreakGlassAdminResetTool` stages an atomic `0600` request consumed in-memory by `OscarIdentityStore`, immediately updating the PBKDF2 hash in `BasicSecurityRealmConfig`, clearing rate-limit lockouts, revoking all active sessions for that user, preserving all existing users, Operational Views, and Passkey records, and recording an indelible `BREAK_GLASS_PASSWORD_RESET` entry (with host actor `sudo:<user>@<host>` or `DOMAIN\Admin`) in `/var/lib/oscar/.moduledata/security-break-glass-audit.log`, OSCAR `WARN` logs, and host `syslog` / Windows Application Event Log. After signing in once with the recovered password on the new domain, open **Users & Access -> My Account** to enroll a new Passkey for the new domain (and optionally mint fresh 1-tap QR Passkey enrollment invites for operators).
+
+#### Securing host privilege, at-rest storage & bare-metal autoinstall deployments
+
+Because `reset-admin-password` and persistent state (`/var/lib/oscar/config.json`, `secrets/`, and `postgres_data`) sit inside the **host OS administrator / physical disk trust boundary**, production portals—especially turnkey **Bare-Metal Ubuntu 24.04 Autoinstall USB (`create-autoinstall-usb`)** deployments where the site controls the entire hardware and OS stack—must enforce all six defense-in-depth layers below:
+
+1. **Physical & Pre-Boot Firmware Lock (`UEFI Supervisor Password` + `Secure Boot` + USB Sanitization):**
+   - Keep **UEFI Secure Boot** enabled (preserved automatically by `create-autoinstall-usb`), set a **UEFI/BIOS Supervisor Password**, and disable external USB/PXE boot priority after initial OS installation so an unauthorized person with physical access cannot boot a live Linux USB stick to inspect raw disks.
+   - Store or wipe the `create-autoinstall-usb` installer stick after commissioning, as its `CIDATA` / `OSCAR_MEDIA` partitions hold the initial provisioning profile and any pre-staged `seed/` files.
+2. **Full-Disk Encryption at Rest (`LUKS2` on Ubuntu 24.04; `BitLocker` on Windows 11):**
+   - Without full-disk encryption, anyone who removes the NVMe SSD or boots external media can mount the root filesystem offline and edit `/var/lib/docker/volumes/oscar_oscar_state/_data/config.json`.
+   - When building a bare-metal Ubuntu 24.04 installer stick, pass `--luks-passphrase-file FILE` (Linux) or `-LuksPassphraseFile FILE` (Windows) to `create-autoinstall-usb` so Subiquity encrypts `100%` of the internal NVMe with **LUKS2 (`dm_crypt` -> `ubuntu-vg` -> `ubuntu-lv`)** from first boot.
+   - On unattended 24/7 portals with a hardware **TPM 2.0** chip and **UEFI Secure Boot** enabled, you can optionally bind automatic hands-free power-outage reboot unlock to the signed UEFI boot chain (`PCR 0+7`) after first boot while retaining your recovery passphrase in a safe:
+     ```sh
+     sudo systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=0+7 /dev/nvme0n1p3
+     ```
+   - On Windows 11 hosts, enable **BitLocker** (`TPM` or `TPM + PIN`) on the OS and storage volumes before staging site credentials.
+   - **Zero Impact on Cross-OS (`Ubuntu <-> Windows 11`) Transfers:** LUKS2 and BitLocker encrypt only each machine's **internal OS/storage drive** at the block layer. Portable external `OSCAR_BACKUP` USB NVMe drives (`oscar-usb-backup.sh` / `oscar-usb-backup.ps1`) remain formatted as standard cross-platform **`NTFS`** with OS-independent **AES-256-CBC + HMAC-SHA-256** credential encryption (`oscar-backup-key.txt`) and `linux/amd64` container-portable PostgreSQL + ZSTD Parquet archives—so **Ubuntu -> Windows 11** and **Windows 11 -> Ubuntu** backup restores continue to work identically without decrypting or reformatting internal OS disks.
+3. **OS Account & `sudo` Privilege Separation (`--require-sudo-password` & Zero `docker` Group Membership):**
+   - **Never share the Linux `oscaradmin` / Windows `Administrator` OS login with gatehouse operators.** Operators sign in exclusively through the HTTPS browser UI (`/users`) as `Operator` or `Viewer`, which grants **zero** OS shell, container, or `config.json` access.
+   - **Always set a unique OS password** during `create-autoinstall-usb` (`--password-file` / `--password-hash` or interactive prompt)—never leave the template bootstrap password active (`sudo bash oscar.sh host-check` audits `/etc/shadow` and warns if the template hash is still present).
+   - **Require `sudo` password re-entry (`--require-sudo-password`):** Pass `--require-sudo-password` (`-RequireSudoPassword` on Windows) when running `create-autoinstall-usb`, or run `sudo bash oscar.sh prepare-host --require-sudo-password` after installation, to remove passwordless `NOPASSWD:ALL` sudoers drop-ins so an unattended terminal cannot invoke `sudo bash oscar.sh reset-admin-password` without re-authenticating.
+   - **Never add human users to the Linux `docker` group:** Membership in the `docker` group is root-equivalent (`docker run -v /:/host ...`) and bypasses `sudo` audit attribution. `prepare-host` intentionally keeps human users out of `docker` so every administrative command runs via `sudo bash oscar.sh ...`, recording `SUDO_USER` in both `/var/log/auth.log` and `security-break-glass-audit.log`.
+4. **SSH & Management Network Hardening (`--ssh-keys-only`, `--ufw-ssh-cidr`, or `--ufw-disable-ssh`):**
+   - `user-data.yaml` and `prepare-host` enforce `PermitRootLogin no`, `X11Forwarding no`, and `MaxAuthTries 4` in `/etc/ssh/sshd_config.d/90-oscar-hardening.conf`.
+   - Provision Ed25519 or hardware FIDO2 YubiKey SSH public keys (`sk-ssh-ed25519@openssh.com`) via `--ssh-key-file` and pass **`--ssh-keys-only`** (in `create-autoinstall-usb` or `prepare-host --ssh-keys-only`, which verifies `authorized_keys` is non-empty before disabling SSH password authentication).
+   - Restrict port `22/tcp` in UFW strictly to a dedicated management subnet/jump host (`sudo bash oscar.sh prepare-host --ufw-ssh-cidr 198.51.100.0/28`)—or close inbound SSH completely on local-console-only air-gapped portals (`sudo bash oscar.sh prepare-host --ufw-disable-ssh`) so network peers can reach only NGINX HTTPS (`443/tcp`) and HTTP redirect (`80/tcp`).
+5. **Container Isolation & Bootstrap Secret Scrubbing:**
+   - All OSCAR containers run unprivileged (`10001:10001`, `read_only: true`, `cap_drop: ALL`, `no-new-privileges: true`, zero `docker.sock` mounts), `init` overwrites `secrets/oscar-admin-password.txt` with `# CONSUMED_AT_INIT` immediately after PBKDF2 hashing, and `support-bundle` excludes `secrets/*`, `tls/*.key`, `oscar-identity.json`, and `.break-glass-reset.*` while redacting `config.json` password hashes.
+6. **Continuous Posture Verification (`host-check --strict`) & Break-Glass Audit Review:**
+   - Run `sudo bash oscar.sh host-check --strict` after commissioning to verify zero default OS password hashes, SSH root-login rejection, explicit `sudo` password policy, bounded logs, and static site networking, and monitor `/var/lib/oscar/.moduledata/security-break-glass-audit.log` and `/var/log/auth.log` (`oscar-security`) for any `BREAK_GLASS_PASSWORD_RESET` events.
+
+#### Turnkey self-hosted federated remote access & SSO (`ORNL/oscar-federation-hub`)
+
+Organizations that operate multiple firewalled or NATed OSCAR sites and want a simple, self-hosted way to reach sites remotely and add or revoke operator access from a single place—without requiring an external cloud IdP or opening inbound firewall ports at field portals—can deploy the companion [`ORNL/oscar-federation-hub`](https://github.com/ORNL/oscar-federation-hub) stack on a central Linux VM or HQ server:
+
+1. **Prepare the central Hub host:** Point `hub.example.org` and `*.hub.example.org` to a Linux host reachable on TCP/UDP `443` with an initialized Octelium cluster (`octeliumctl` authenticated) and Docker Compose v2, then clone and initialize [`ORNL/oscar-federation-hub`](https://github.com/ORNL/oscar-federation-hub):
+   ```sh
+   git clone https://github.com/ORNL/oscar-federation-hub.git
+   cd oscar-federation-hub
+
+   # Mode A (Recommended): Octelium Zero-Trust tunnel + Authentik browser user console
+   ./oscar-hub.sh init --domain hub.example.org --with-authentik --admin-email secops@example.org
+
+   # OR Mode B (Lightweight): Octelium CLI-only user management (no Authentik container stack)
+   ./oscar-hub.sh init --domain hub.example.org
+   ```
+   Mode A automatically launches pinned Authentik containers (`versions.env`) and applies a Blueprint that pre-creates the `oscar-admins`, `oscar-operators`, and `oscar-viewers` groups, configures the `groups` OIDC claim, and pre-authorizes `https://<site>.hub.example.org/login/oidc/callback`.
+2. **Register each OSCAR site & connect its outbound tunnel sidecar:** On the Hub host, mint a site-scoped workload connector token:
+   ```sh
+   ./oscar-hub.sh add-site north-gate --display-name "North Gate Portal" --with-trusted-headers
+   ```
+   Copy `state/tokens/north-gate.token` securely to that OSCAR 3.11.10 host and run OSCAR's built-in remote-access helper (then delete the temporary token file):
+   ```sh
+   # Ubuntu Server 24.04
+   sudo bash oscar-remote-access.sh configure \
+     --domain hub.example.org \
+     --service north-gate \
+     --token-file /root/north-gate.token
+   sudo shred -u /root/north-gate.token
+   ```
+   ```powershell
+   # Windows 11 + WSL 2 (Administrator PowerShell)
+   .\oscar-remote-access.ps1 configure `
+     -Domain hub.example.org `
+     -Service north-gate `
+     -TokenFile C:\Users\Admin\north-gate.token
+   Remove-Item -Force C:\Users\Admin\north-gate.token
+   ```
+3. **Wire centralized SSO in OSCAR (`Users & Access -> Sign-In & SSO Policy`):** Sign in to the OSCAR Viewer as an `Administrator`, open **Users & Access (`/users`) -> Sign-In & SSO Policy**, and paste the exact settings printed by `oscar-hub.sh`:
+   - **Browser OIDC SSO (Mode A):** Enable **OIDC Single Sign-On**, set **Issuer URL** to `https://auth.hub.example.org/application/o/oscar-federation-sso/`, **Client ID** to `oscar-federation-hub`, **Client Secret** from `state/secrets/oidc-client-secret.txt`, **Scopes** to `openid profile email groups`, **Admin / Operator Groups** to `oscar-admins` / `oscar-operators`, and **External SSO Admin Console URL** to `https://auth.hub.example.org/if/admin/` (which adds a 1-click **Open Federated User Console** button at the top of **Users & Roles**). If your Hub uses an internal PKI instead of Let's Encrypt, supply the mounted root CA PEM path in **OIDC Custom CA Certificate Path**.
+   - **Zero-Click Trusted Tunnel SSO (`--with-trusted-headers`):** Optionally enable **Verified Tunnel Header SSO** with `X-Octelium-User`, `X-Octelium-Groups`, and the `>= 16`-character `X-Oscar-Tunnel-Secret` from `state/secrets/oscar-tunnel-shared-secret.txt` so operators already signed into the Hub land directly inside OSCAR with their mapped role.
+   - **Coexistence with Local Offline Accounts & Node Data Federation:** Central `oidc`/`tunnel` accounts never overwrite local `authSource = "local"` accounts, so site-local Passkeys and PBKDF2 passwords continue working on the local LAN during WAN outages. For server-to-server alarm/video aggregation onto a Central OSCAR Viewer, mint a dedicated `oscar_fed_...` **Federation Service Token** on each site and add `north-gate.hub.example.org` (`HTTPS`, port `443`) on Central's **Servers** page so disabling a human employee never interrupts site-to-central telemetry.
+   - **Zero-Trust Remote Practice Sandbox (`https://<site>-sandbox.<hub>`):** `oscar-hub.sh add-site` and `oscar.sh remote-access` automatically register a companion **`<site>-sandbox.<hub>`** Web service over the **same single outbound `oscar-tunnel` connector token** (`octelium connect --serve-all` -> loopback `127.0.0.1:18444` -> `https://host.docker.internal:8444`). Remote users click **Launch Practice Sandbox** inside **Guided Walkthrough** or **Help (`?`)** on `https://<site>.<hub>` and open **`https://<site>-sandbox.<hub>`** over standard HTTPS `:443` with valid **Let's Encrypt TLS**, **shared parent-domain WebAuthn Passkeys (`rpId = <hub>`)**, Authentik OIDC / Verified Tunnel SSO, and `/sensorhub/admin` split-pane training enabled inside `<site>-sandbox.<hub>` (while `/sensorhub/admin` remains blocked on operational `<site>.<hub>`), alongside direct `https://<host>:8444` access on the local LAN.
+
+The application configuration is copied into the `oscar_state` volume on first startup. Runtime configuration saves update only that persistent copy. Application libraries and viewer assets remain read-only in the image. PostgreSQL data is stored in the `postgres_data` volume. OSCAR 3.11.10 uses a long-lived host bind for the primary Parquet cold tier (`OSCAR_ARCHIVE_DIR`) so multi-year archives can reside on a dedicated host volume, survive `docker compose down -v` or Docker Desktop resets, and undergo direct host-side ACL, `.oscar-storage-root`, and offline backup verification; on Windows WSL 2 `9p`/`drvfs` mounts, OSCAR automatically caches SHA-256-verified Parquet generations inside a disk-proportional (`2–8 GiB`, excluded from backups) native `ext4` cache (`/var/lib/oscar/.cache/oscar-9p-parquet-cache`) so repeat historical queries avoid cross-VM `9p` read amplification without giving up host-bind durability. Keep `OSCAR_JAVA_OPTS` aligned with `.env.example` rather than forcing oversized `ForkJoinPool.common.parallelism` values on 4–8 core hosts. PostgreSQL runs with `archive_mode=off`, no external archive command, and no WAL bind. An existing `OSCAR_WAL_ARCHIVE_DIR` is preserved only to avoid deleting legacy data; current schema-v1/v2 restore does not use it. Fresh deployments set `OSCAR_BACKUP_MODE=disabled`; after explicit `single` opt-in, `OSCAR_BACKUP_DIR` is an operator-selected safe absolute host path that does not overlap the release or archive roots and is never mounted into a long-running service. A separate physical drive is recommended for failure isolation but is not required. A Docker named-volume backup or Parquet copy alone is incomplete.
 
 The OSCAR service keeps the general-purpose `/tmp` tmpfs `noexec`. Embedded Java native libraries,
 including DuckDB JDBC and JavaCPP/FFmpeg, are extracted instead to a separate 256 MiB tmpfs at
@@ -391,7 +641,30 @@ Every reported privilege flag for `oscar_app` must be false. A host scan must sh
 
 ## Upgrade
 
-For a 3.11.0-or-newer same-storage-profile upgrade, create and verify a coordinated snapshot first when the site has explicitly selected `OSCAR_BACKUP_MODE=single`. A disabled site must use its separately approved protection procedure or opt in through `upgrade` before invoking backup or restore. A pre-3.11.0 release does not have this CLI; use that release's supported backup/export procedure and retain the old system read-only until the separately qualified migration is complete. Extract the new release into a clean sibling directory; do not overlay it on the previous release because removed files would otherwise remain in the image build context. Copy only `.env`, `secrets/`, and `tls/` from the existing deployment into the clean release directory. If the deployment has a `.oscar-volume-adoption` receipt, copy that file too. Preserve `OSCAR_BACKUP_MODE`, the absolute active `OSCAR_ARCHIVE_DIR` and `OSCAR_BACKUP_DIR` values, and any existing absolute `OSCAR_WAL_ARCHIVE_DIR` compatibility binding; setup must never delete legacy roots or data while changing modes. Before starting services, use `docker compose config` to confirm the archive bind and the absence of a PostgreSQL WAL bind, then inspect the single mode and backup-root entries in `.env`. Compose attaches the exact external volumes `oscar_oscar_state` and `oscar_postgres_data`; setup owns their creation and validates deployment identity. Then run:
+### Zero-Login GUI & Single-Command Host System Update (`3.11.10+`)
+
+Administrators on connected or air-gapped `3.11.10+` deployments can upgrade directly from the browser console without any GitHub account, OAuth sign-in, or Personal Access Token:
+
+1. Sign in to OSCAR Viewer as an **Administrator** and open **Users & Access -> System Update** (`/users?tab=update`), or open **Help (`?`) -> Open System Update**.
+2. **Connected sites:** Click **Check GitHub for Updates** (resolves `https://github.com/ORNL/oscar/releases/latest` and `.zip.sha256` anonymously with zero REST API rate-limit quota), review the release summary and SHA-256 digest, optionally enable **Create an encrypted backup snapshot before upgrading**, and click **Download & Install**.
+3. **Air-gapped / offline sites:** Under **Air-Gapped / Offline Release `.zip` Upload**, select `oscar-<version>.zip` (or `oscar-<version>-ubuntu-x86_64-offline-full.zip` / `oscar-<version>-windows-x86_64-offline-images.zip`) and click **Upload & Install Bundle**.
+4. Equivalent zero-login host CLI commands (`oscar-update.sh` / `oscar-update.ps1`, registered automatically as a detached host agent during `init`, `start`, `restart`, and `upgrade`, or disabled via `OSCAR_GUI_UPDATE=disabled` in `.env`):
+
+```sh
+bash oscar.sh update check
+sudo bash oscar.sh update apply
+```
+
+```powershell
+.\oscar.bat update check
+.\oscar.bat update apply
+```
+
+If container startup or HTTPS `/healthz` readiness fails during cutover, the host update agent automatically rolls back to the untouched previous release directory and restores service.
+
+### Manual Clean-Directory Upgrade
+
+For a 3.11.10-or-newer same-storage-profile upgrade, create and verify a coordinated snapshot first when the site has explicitly selected `OSCAR_BACKUP_MODE=single`. A disabled site must use its separately approved protection procedure or opt in through `upgrade` before invoking backup or restore. A pre-3.11.0 release does not have this CLI; use that release's supported backup/export procedure and retain the old system read-only until the separately qualified migration is complete. Extract the new release into a clean sibling directory; do not overlay it on the previous release because removed files would otherwise remain in the image build context. Copy only `.env`, `secrets/`, and `tls/` from the existing deployment into the clean release directory. If the deployment has a `.oscar-volume-adoption` receipt, copy that file too. Preserve `OSCAR_BACKUP_MODE`, the absolute active `OSCAR_ARCHIVE_DIR` and `OSCAR_BACKUP_DIR` values, and any existing absolute `OSCAR_WAL_ARCHIVE_DIR` compatibility binding; setup must never delete legacy roots or data while changing modes. Before starting services, use `docker compose config` to confirm the archive bind and the absence of a PostgreSQL WAL bind, then inspect the single mode and backup-root entries in `.env`. Compose attaches the exact external volumes `oscar_oscar_state` and `oscar_postgres_data`; setup owns their creation and validates deployment identity. Then run:
 
 ```powershell
 .\oscar.bat upgrade
@@ -401,7 +674,7 @@ For a 3.11.0-or-newer same-storage-profile upgrade, create and verify a coordina
 sudo bash oscar.sh upgrade
 ```
 
-The command preserves existing settings and data while normalizing the required 3.11.0 managed
+The command preserves existing settings and data while normalizing the required 3.11.10 managed
 bindings: deployment identity, exact backup mode, absolute external storage roots, and the canonical backup-key
 binding. A legacy deployment may also receive a generated backup key plus explicit volume/root
 adoption metadata when the corresponding adoption options are supplied. After those guarded
@@ -453,11 +726,11 @@ before claiming any path. Backups exclude these host-local markers, and restore 
 revalidates the target markers instead of accepting identities from backup media. A retired
 legacy-WAL tree is neither claimed nor mutated by current setup.
 
-The OSCAR application libraries and exported Viewer are part of the `oscar:<version>` image. A restart does not rebuild that image. To test OSCAR 3.11.0 from a connected release artifact, prepare the clean release directory as described above. Use `init` and fresh state for the complete 3.11.0 storage profile; use `upgrade` only when intentionally retaining the existing storage/configuration profile. Confirm that `docker compose images` reports `oscar:3.11.0` before accepting the test result.
+The OSCAR application libraries and exported Viewer are part of the `oscar:<version>` image. A restart does not rebuild that image. To test OSCAR 3.11.10 from a connected release artifact, prepare the clean release directory as described above. Use `init` and fresh state for the complete 3.11.10 storage profile; use `upgrade` only when intentionally retaining the existing storage/configuration profile. Confirm that `docker compose images` reports `oscar:3.11.10` before accepting the test result.
 
-Release image tags are immutable once published. Connected `init` and `upgrade` rebuild both local image contexts (`oscar:3.11.0` and `oscar-postgis:3.11.0`) before recreating services, even when those tags already exist, so a pre-release same-tag iteration cannot silently retain an older application or restore helper. On Ubuntu this is equivalent to `OSCAR_VERSION=3.11.0 docker compose build oscar postgres`. The Windows setup performs two bounded `docker build` operations, including `docker build --platform linux/amd64 --build-arg OSCAR_VERSION=3.11.0 --tag oscar-postgis:3.11.0 --file postgis/Dockerfile postgis`; this avoids Docker Compose 5.6's in-tree Dockerfile entitlement regression without granting wildcard filesystem access. The regression platform check requires each packaged helper to match its deployed image byte-for-byte. Never replace a published `oscar:3.11.0` image with different contents.
+Release image tags are immutable once published. Connected `init` and `upgrade` rebuild both local image contexts (`oscar:3.11.10` and `oscar-postgis:3.11.10`) before recreating services, even when those tags already exist, so a pre-release same-tag iteration cannot silently retain an older application or restore helper. On Ubuntu this is equivalent to `OSCAR_VERSION=3.11.10 docker compose build oscar postgres`. The Windows setup performs two bounded `docker build` operations, including `docker build --platform linux/amd64 --build-arg OSCAR_VERSION=3.11.10 --tag oscar-postgis:3.11.10 --file postgis/Dockerfile postgis`; this avoids Docker Compose 5.6's in-tree Dockerfile entitlement regression without granting wildcard filesystem access. The regression platform check requires each packaged helper to match its deployed image byte-for-byte. Never replace a published `oscar:3.11.10` image with different contents.
 
-The default configuration for a new installation is labeled `OSCAR 3.11.0`. An upgrade preserves `/var/lib/oscar/config.json`, including a customized deployment name, so the Admin UI may continue to display the prior or site-specific label. Do not overwrite that value merely to display a version number. Use `OSCAR_VERSION` in `.env` and `docker compose images` to verify the running release. The OSCAR image also stamps that value into the OCI `org.opencontainers.image.version` label; inspect it on PowerShell or a POSIX shell with `docker image inspect oscar:3.11.0 --format '{{json .Config.Labels}}'` and require the label value `3.11.0` before accepting the image.
+The default configuration for a new installation is labeled `OSCAR 3.11.10`. An upgrade preserves `/var/lib/oscar/config.json`, including a customized deployment name, so the Admin UI may continue to display the prior or site-specific label. Do not overwrite that value merely to display a version number. Use `OSCAR_VERSION` in `.env` and `docker compose images` to verify the running release. The OSCAR image also stamps that value into the OCI `org.opencontainers.image.version` label; inspect it on PowerShell or a POSIX shell with `docker image inspect oscar:3.11.10 --format '{{json .Config.Labels}}'` and require the label value `3.11.10` before accepting the image.
 
 On Windows, setup and storage administration stream every bounded shell body and direct `psql`
 statement into the one-shot container over UTF-8 standard input. The direct `docker run` adapter owns
@@ -469,11 +742,11 @@ quoted values exactly under Windows PowerShell 5.1 native argument handling. A f
 check leaves the receipt in `INITIALIZING`; correct the reported problem and rerun `oscar.bat init`
 from the same release and protected runtime state rather than deleting the volumes.
 
-### 3.11.0 storage migration boundary
+### 3.11.10 storage migration boundary
 
-OSCAR 3.11.0 changes the default database module, write path, daily-file source capture, media-retention format, and PostgreSQL initialization. `upgrade` deliberately does not overwrite the saved module configuration or recreate the PostgreSQL cluster, so an upgraded pre-3.11.0 system does not automatically gain the complete 3.11.0 storage profile or data checksums.
+OSCAR 3.11.10 changes the default database module, write path, daily-file source capture, media-retention format, and PostgreSQL initialization. `upgrade` deliberately does not overwrite the saved module configuration or recreate the PostgreSQL cluster, so an upgraded pre-3.11.0 system does not automatically gain the complete 3.11.10 storage profile or data checksums.
 
-Initialize the current test systems and new production systems with a fresh 3.11.0 database/configuration. If existing production history must be retained, keep the old system read-only after a verified backup and use a separately designed and tested migration. Do not delete production volumes merely to make the new module start. Follow the parity, restore-drill, and bounded hot-deletion validation in [`../../docs/STORAGE_OPERATIONS.md`](../../docs/STORAGE_OPERATIONS.md).
+Initialize the current test systems and new production systems with a fresh 3.11.10 database/configuration. If existing production history must be retained, keep the old system read-only after a verified backup and use a separately designed and tested migration. Do not delete production volumes merely to make the new module start. Follow the parity, restore-drill, and bounded hot-deletion validation in [`../../docs/STORAGE_OPERATIONS.md`](../../docs/STORAGE_OPERATIONS.md).
 
 The OSCAR container keeps `/var/lib/oscar/config.json` readable and writable only by the OSCAR runtime user (`0600`) and repairs older read-only copies during startup. After importing a lane CSV, wait for every lane to appear under **Sensors**, select the global **Save** action, restart OSCAR, and confirm that the same lanes reload. Historical systems in PostgreSQL are not proof that runtime sensor modules were saved; an empty **Sensors** tree after restart indicates that the module configuration was not persisted.
 

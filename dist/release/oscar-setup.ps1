@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('init', 'check', 'host-check', 'prepare-host', 'verify', 'start', 'stop', 'restart', 'status', 'logs', 'support-bundle', 'upgrade', 'backup', 'backup-verify', 'backup-prune', 'restore', 'archive', 'help')]
+    [ValidateSet('init', 'check', 'host-check', 'prepare-host', 'verify', 'start', 'stop', 'restart', 'status', 'logs', 'support-bundle', 'reset-admin-password', 'upgrade', 'backup', 'backup-verify', 'backup-prune', 'restore', 'archive', 'help')]
     [string]$Command = 'help',
     [string]$StorageAction,
     [string]$HoldAction,
@@ -59,7 +59,11 @@ param(
     [switch]$ForceWslConfig,
     [switch]$SkipWslConfig,
     [switch]$Json,
-    [switch]$Strict
+    [switch]$Strict,
+    [string]$User = 'admin',
+    [switch]$MustChange,
+    [switch]$PasswordStdin,
+    [string]$Password
 )
 
 Set-StrictMode -Version 2.0
@@ -1163,13 +1167,76 @@ function Invoke-Compose([string[]]$Arguments) {
     Assert-ManagedEnvironmentBindings
     Push-Location $ScriptRoot
     $saved = Clear-ComposeOverrideEnvironment
+    $hadRpId = Test-Path -LiteralPath 'Env:OSCAR_WEBAUTHN_RP_ID'
+    $prevRpId = if ($hadRpId) { $env:OSCAR_WEBAUTHN_RP_ID } else { '' }
     try {
+        $octRpId = ''
+        $archiveDir = Get-ConfiguredEnvValue 'OSCAR_ARCHIVE_DIR'
+        $storageRoot = if (-not [string]::IsNullOrWhiteSpace($archiveDir)) { Split-Path -Parent $archiveDir } else { Join-Path (Split-Path -Parent $ScriptRoot) 'oscar-storage' }
+        $octEnv = Join-Path $storageRoot 'remote-access\octelium.env'
+        if (Test-Path -LiteralPath $octEnv) {
+            $octEnabled = ''
+            $octDomain = ''
+            foreach ($line in [System.IO.File]::ReadAllLines($octEnv)) {
+                if ($line -match '^OCTELIUM_ENABLED=(.*)$') { $octEnabled = $Matches[1].Trim() }
+                elseif ($line -match '^OCTELIUM_DOMAIN=(.*)$') { $octDomain = $Matches[1].Trim() }
+            }
+            if ($octEnabled -eq 'true' -and -not [string]::IsNullOrWhiteSpace($octDomain)) {
+                $octRpId = $octDomain
+            }
+        }
+        $env:OSCAR_WEBAUTHN_RP_ID = $octRpId
         Invoke-External 'docker' (@(
             'compose', '--project-name', 'oscar', '--env-file', (Join-Path $ScriptRoot '.env'),
             '--file', (Join-Path $ScriptRoot 'compose.yaml')) + $Arguments)
     } finally {
+        if ($hadRpId) { $env:OSCAR_WEBAUTHN_RP_ID = $prevRpId } else { Remove-Item -LiteralPath 'Env:OSCAR_WEBAUTHN_RP_ID' -ErrorAction SilentlyContinue }
         Restore-ComposeOverrideEnvironment $saved
         Pop-Location
+    }
+}
+
+function Invoke-RemoteAccessSubcommand([string[]]$Arguments, [bool]$IgnoreErrors = $false) {
+    if ($env:OSCAR_STORAGE_TEST_MODE -eq '1' -and $env:OSCAR_REMOTE_ACCESS_TEST_ALLOW -ne '1') {
+        return
+    }
+    $remoteAccessScript = Join-Path $ScriptRoot 'oscar-remote-access.ps1'
+    if (-not (Test-Path -LiteralPath $remoteAccessScript)) {
+        return
+    }
+    if ($IgnoreErrors) {
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $remoteAccessScript @Arguments *> $null
+            $global:LASTEXITCODE = 0
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
+    } else {
+        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $remoteAccessScript @Arguments
+    }
+}
+
+function Invoke-RpmProxySubcommand([string[]]$Arguments, [bool]$IgnoreErrors = $false) {
+    if ($env:OSCAR_STORAGE_TEST_MODE -eq '1' -and $env:OSCAR_RPM_PROXY_TEST_ALLOW -ne '1') {
+        return
+    }
+    $rpmProxyScript = Join-Path $ScriptRoot 'oscar-rpm-proxy.ps1'
+    if (-not (Test-Path -LiteralPath $rpmProxyScript)) {
+        return
+    }
+    if ($IgnoreErrors) {
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $rpmProxyScript @Arguments *> $null
+            $global:LASTEXITCODE = 0
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
+    } else {
+        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $rpmProxyScript @Arguments
     }
 }
 
@@ -1178,6 +1245,7 @@ function Stop-ApplicationTierOrdered {
     # multi-service stop signals every container concurrently, which can take
     # PostgreSQL away while OSCAR is still draining writers. Preserve the
     # service stop_grace_period deadlines while enforcing dependency order.
+    Invoke-RemoteAccessSubcommand @('stop-if-enabled') $true
     Invoke-Compose @('stop', 'gateway')
     Invoke-Compose @('stop', 'oscar')
 }
@@ -1971,7 +2039,7 @@ fi
         generatedAt    = $generatedAt
         policy         = 'automatic-edge-redaction'
         bundleSource   = 'host-cli'
-        neverCollected = @('secrets/*', '/run/secrets/*', 'tls/*.key', '.keystore/*', 'hivemq-data/*')
+        neverCollected = @('secrets/*', '/run/secrets/*', 'tls/*.key', '.keystore/*', 'hivemq-data/*', '.moduledata/oscar-identity.json', '.moduledata/.break-glass-reset.*', 'remote-access/*')
         counts         = [ordered]@{
             jsonFieldsRedacted      = [int]$stats['jsonFieldsRedacted']
             uriCredentialsRedacted  = [int]$stats['uriCredentialsRedacted']
@@ -2074,9 +2142,17 @@ OSCAR deployment administration
       [-BackupMode disabled|single] [-BackupDir ABSOLUTE_PATH]
   .\oscar.bat logs [-Service all|oscar|postgres|gateway] [-Tail 200] [-Follow]
   .\oscar.bat support-bundle [-Tail 2500] [-Destination PATH]
+  .\oscar.bat reset-admin-password [-User admin] [-MustChange] [-PasswordStdin]
   .\oscar.bat backup
   .\oscar.bat backup-verify -BackupId ID
   .\oscar.bat restore -BackupId ID -Confirm ID
+  .\oscar.bat usb-backup list-drives|status|attach|eject|sync
+  .\oscar.bat usb-backup prepare-drive (-DriveLetter R [-Format -Confirm FORMAT] | -Path DIR) [-Mode continual|occasional]
+  .\oscar.bat usb-backup mode continual|occasional|disabled [-IntervalMinutes 15]
+  .\oscar.bat usb-backup verify [-From PATH] [-BackupKey FILE] [-Deep]
+  .\oscar.bat usb-backup restore [-From PATH] [-BackupKey FILE] -Confirm RESTORE
+  .\oscar.bat rpm-proxy configure -FromCsv LANES_CSV [-Mode port-map] [-Start]
+  .\oscar.bat rpm-proxy start|stop|restart|upgrade|status|logs|validate|disable
   .\oscar.bat archive status|verify
   .\oscar.bat archive hold list
   .\oscar.bat archive hold create -StoreKey KEY -IdScope INT (-Generation UUID | -Observation ID) -Reason TEXT
@@ -2201,6 +2277,16 @@ try {
                 Invoke-Compose @('up', '--detach', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '240')
                 Enable-StorageDatabaseFeatures
                 Complete-PendingFreshInit
+                if ($env:OSCAR_KEEP_BOOTSTRAP_SECRET -cne 'true') {
+                    Write-SecretFile $adminSecretPath '# CONSUMED_AT_INIT: Initial bootstrap password hashed into OSCAR state; manage accounts in OSCAR Viewer -> Users & Access.'
+                    Protect-DeploymentFiles
+                }
+                $usbScript = Join-Path $ScriptRoot 'oscar-usb-backup.ps1'
+                if (Test-Path -LiteralPath $usbScript) { try { & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $usbScript install-agent | Out-Null } catch {} }
+                $sandboxScript = Join-Path $ScriptRoot 'oscar-sandbox.ps1'
+                if (Test-Path -LiteralPath $sandboxScript) { try { & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $sandboxScript install-agent | Out-Null } catch {} }
+                $updateScript = Join-Path $ScriptRoot 'oscar-update.ps1'
+                if (Test-Path -LiteralPath $updateScript) { try { & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $updateScript install-agent | Out-Null } catch {} }
             }
             Write-Host "`nOSCAR setup complete: https://${Hostname}:$Port/sensorhub/admin" -ForegroundColor Green
             Write-ClientAccessInstructions $resolvedTlsSans
@@ -2212,6 +2298,13 @@ try {
             Invoke-Compose @('up', '--detach', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '240')
             Enable-StorageDatabaseFeatures
             Complete-PendingFreshInit
+            $usbScript = Join-Path $ScriptRoot 'oscar-usb-backup.ps1'
+            if (Test-Path -LiteralPath $usbScript) { try { & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $usbScript install-agent | Out-Null } catch {} }
+            $sandboxScript = Join-Path $ScriptRoot 'oscar-sandbox.ps1'
+            if (Test-Path -LiteralPath $sandboxScript) { try { & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $sandboxScript install-agent | Out-Null } catch {} }
+            $updateScript = Join-Path $ScriptRoot 'oscar-update.ps1'
+            if (Test-Path -LiteralPath $updateScript) { try { & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $updateScript install-agent | Out-Null } catch {} }
+            Invoke-RemoteAccessSubcommand @('sync')
         }
         'stop' {
             Assert-Administrator; Assert-Docker; Assert-Configured
@@ -2225,13 +2318,24 @@ try {
             Invoke-Compose @('up', '--detach', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '240')
             Enable-StorageDatabaseFeatures
             Complete-PendingFreshInit
+            $usbScript = Join-Path $ScriptRoot 'oscar-usb-backup.ps1'
+            if (Test-Path -LiteralPath $usbScript) { try { & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $usbScript install-agent | Out-Null } catch {} }
+            $sandboxScript = Join-Path $ScriptRoot 'oscar-sandbox.ps1'
+            if (Test-Path -LiteralPath $sandboxScript) { try { & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $sandboxScript install-agent | Out-Null } catch {} }
+            $updateScript = Join-Path $ScriptRoot 'oscar-update.ps1'
+            if (Test-Path -LiteralPath $updateScript) { try { & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $updateScript install-agent | Out-Null } catch {} }
+            Invoke-RemoteAccessSubcommand @('sync')
         }
         'status' {
             Assert-Docker
             Invoke-Compose @('ps')
             $isConfigured = $true
             try { Assert-Configured } catch { $isConfigured = $false }
-            if ($isConfigured) { Write-Host "OSCAR URL: $(Get-ConfiguredEndpoint)" }
+            if ($isConfigured) {
+                Write-Host "OSCAR URL: $(Get-ConfiguredEndpoint)"
+                Invoke-RemoteAccessSubcommand @('status')
+                Invoke-RpmProxySubcommand @('status') $true
+            }
         }
         'logs' {
             Assert-Docker; Assert-Configured
@@ -2243,6 +2347,127 @@ try {
         'support-bundle' {
             $effectiveSupportTail = if ($PSBoundParameters.ContainsKey('Tail')) { $Tail } else { 2500 }
             Export-HostSupportBundle $effectiveSupportTail (-not [string]::IsNullOrWhiteSpace($Destination))
+        }
+        'reset-admin-password' {
+            if ($PSBoundParameters.ContainsKey('Password') -or -not [string]::IsNullOrEmpty($Password)) {
+                throw 'Never pass -Password on the command line (visible in process listings and command history). Prompt interactively or pipe via -PasswordStdin.'
+            }
+            Assert-Administrator
+            Assert-DeploymentPathsSafe
+            Assert-Docker
+            Assert-BaseConfigured
+            Assert-DeploymentVolumeOwnership $false
+            $targetUser = if ($User) { $User.Trim() } else { 'admin' }
+            if ($targetUser -cnotmatch '^[A-Za-z0-9._@-]{2,64}$') {
+                throw "Invalid -User value: $targetUser"
+            }
+            if ($targetUser.ToLowerInvariant().StartsWith('svc-fed-')) {
+                throw "Cannot reset password on federation service user: $targetUser"
+            }
+
+            $newResetPassword = $null
+            if ($PasswordStdin) {
+                $stdinLine = [Console]::In.ReadLine()
+                if ([string]::IsNullOrEmpty($stdinLine)) {
+                    throw 'No password supplied on standard input.'
+                }
+                $newResetPassword = $stdinLine.TrimEnd([char[]]@([char]13, [char]10))
+                if ($newResetPassword.Length -lt 14) {
+                    throw 'Break-glass password must contain at least 14 characters.'
+                }
+            } else {
+                if ($NonInteractive) {
+                    throw 'Use -PasswordStdin for non-interactive break-glass password resets.'
+                }
+                Write-Host "Break-glass local password recovery for OSCAR user '$targetUser' (>= 14 characters; input is hidden)."
+                while ($true) {
+                    $firstSec = Read-Host "New password for '$targetUser'" -AsSecureString
+                    $secondSec = Read-Host "Confirm password for '$targetUser'" -AsSecureString
+                    $firstPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($firstSec)
+                    $secondPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secondSec)
+                    try {
+                        $firstPlain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($firstPtr)
+                        $secondPlain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($secondPtr)
+                        if ($firstPlain.Length -lt 14) {
+                            Write-Warning 'Use at least 14 characters.'
+                            continue
+                        }
+                        if ($firstPlain -cne $secondPlain) {
+                            Write-Warning 'Passwords do not match.'
+                            continue
+                        }
+                        $newResetPassword = $firstPlain
+                        break
+                    } finally {
+                        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($firstPtr)
+                        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($secondPtr)
+                    }
+                }
+            }
+
+            $resetActor = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+            if ([string]::IsNullOrWhiteSpace($resetActor)) {
+                $resetActor = "windows-admin@$env:COMPUTERNAME"
+            }
+            $toolArgs = @('--state-dir', '/var/lib/oscar', '--user', $targetUser, '--actor', $resetActor)
+            if ($MustChange) { $toolArgs += '--must-change' }
+
+            $runningCheck = @()
+            try { $runningCheck = @(Get-ComposeOutput @('ps', '--status', 'running', 'oscar')) } catch { $runningCheck = @() }
+            $oscarIsRunning = [bool]($runningCheck | Where-Object { $_ -match '\boscar\b' })
+            $receiptRaw = ''
+            try {
+                if ($oscarIsRunning) {
+                    try {
+                        $liveOut = @(Get-ComposeInputOutput "$newResetPassword`n" (@(
+                            'exec', '-T', 'oscar', 'java', '-classpath', '/opt/oscar/lib/*',
+                            'org.sensorhub.impl.security.session.BreakGlassAdminResetTool', 'apply-live') + $toolArgs))
+                        $receiptRaw = ($liveOut -join "`n").Trim()
+                    } catch {
+                        $stillRunning = @()
+                        try { $stillRunning = @(Get-ComposeOutput @('ps', '--status', 'running', 'oscar')) } catch { $stillRunning = @() }
+                        if (-not [bool]($stillRunning | Where-Object { $_ -match '\boscar\b' })) {
+                            $offlineOut = @(Get-ExternalInputOutput "$newResetPassword`n" 'docker' (@(
+                                'run', '--rm', '--interactive', '--network', 'none', '--cap-drop', 'ALL',
+                                '--security-opt', 'no-new-privileges', '--tmpfs', '/tmp:rw,noexec,nosuid,nodev',
+                                '--workdir', '/var/lib/oscar', '--user', '10001:10001', '--entrypoint', 'java',
+                                '--volume', 'oscar_oscar_state:/var/lib/oscar', (Get-OscarImage),
+                                '-classpath', '/opt/oscar/lib/*',
+                                'org.sensorhub.impl.security.session.BreakGlassAdminResetTool', 'apply-offline') + $toolArgs))
+                            $receiptRaw = ($offlineOut -join "`n").Trim()
+                        } else {
+                            throw "Break-glass live password reset failed: $($_.Exception.Message)"
+                        }
+                    }
+                } else {
+                    if (-not (Test-ContainerImage (Get-OscarImage))) {
+                        throw "OSCAR container image $(Get-OscarImage) is not loaded."
+                    }
+                    $offlineOut = @(Get-ExternalInputOutput "$newResetPassword`n" 'docker' (@(
+                        'run', '--rm', '--interactive', '--network', 'none', '--cap-drop', 'ALL',
+                        '--security-opt', 'no-new-privileges', '--tmpfs', '/tmp:rw,noexec,nosuid,nodev',
+                        '--workdir', '/var/lib/oscar', '--user', '10001:10001', '--entrypoint', 'java',
+                        '--volume', 'oscar_oscar_state:/var/lib/oscar', (Get-OscarImage),
+                        '-classpath', '/opt/oscar/lib/*',
+                        'org.sensorhub.impl.security.session.BreakGlassAdminResetTool', 'apply-offline') + $toolArgs))
+                    $receiptRaw = ($offlineOut -join "`n").Trim()
+                }
+            } finally {
+                $newResetPassword = $null
+            }
+
+            try {
+                Write-EventLog -LogName Application -Source 'Application' -EntryType Warning -EventId 4724 `
+                    -Message "OSCAR BREAK_GLASS_PASSWORD_RESET applied for user '$targetUser' by '$resetActor'." -ErrorAction SilentlyContinue
+            } catch {}
+
+            $parsedReceipt = $null
+            try { $parsedReceipt = $receiptRaw | ConvertFrom-Json } catch {}
+            $appliedMode = if ($parsedReceipt -and $parsedReceipt.mode) { $parsedReceipt.mode } else { 'applied' }
+            $revokedCnt = if ($parsedReceipt -and $null -ne $parsedReceipt.revokedSessions) { $parsedReceipt.revokedSessions } else { 0 }
+            Write-Host "`nBreak-glass password reset applied for '$targetUser' (mode=$appliedMode, revokedSessions=$revokedCnt, actor=$resetActor)." -ForegroundColor Green
+            Write-Host 'Audit trail recorded in /var/lib/oscar/.moduledata/security-break-glass-audit.log and Windows Application Event Log.'
+            Write-Host 'Sign in at the browser login page, then enroll a new Passkey for the current domain under Users & Access -> My Account.'
         }
         'upgrade' {
             Assert-Administrator
@@ -2275,6 +2500,18 @@ try {
             Invoke-StorageCommand 'upgrade-state' $null
             Enable-StorageDatabaseFeatures
             Complete-PendingFreshInit
+            $usbScript = Join-Path $ScriptRoot 'oscar-usb-backup.ps1'
+            if (Test-Path -LiteralPath $usbScript) { try { & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $usbScript install-agent | Out-Null } catch {} }
+            $sandboxScript = Join-Path $ScriptRoot 'oscar-sandbox.ps1'
+            if (Test-Path -LiteralPath $sandboxScript) { try { & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $sandboxScript install-agent | Out-Null } catch {} }
+            $updateScript = Join-Path $ScriptRoot 'oscar-update.ps1'
+            if (Test-Path -LiteralPath $updateScript) { try { & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $updateScript install-agent | Out-Null } catch {} }
+            if (Test-Path -LiteralPath (Join-Path $ScriptRoot 'offline-images.tar')) {
+                Invoke-RemoteAccessSubcommand @('sync')
+            } else {
+                Invoke-RemoteAccessSubcommand @('sync', '-Rebuild')
+            }
+            Invoke-RpmProxySubcommand @('build-image-only') $true
             Write-Host 'Upgrade deployment completed. Persistent OSCAR and PostgreSQL volumes were retained.' -ForegroundColor Green
         }
         'backup' { Invoke-StorageCommand 'backup' $null }

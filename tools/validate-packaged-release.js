@@ -81,7 +81,17 @@ for (const [relative, expected] of Object.entries(backupDisabledMessages)) {
 }
 
 const expected = [
-    'oscar-storage.sh', 'oscar-storage.ps1', 'configure-windows-host.ps1', 'validate-storage-archive.sh',
+    'compose.sandbox.yaml', 'oscar-sandbox.sh', 'oscar-sandbox.ps1',
+    'oscar-update.sh', 'oscar-update.ps1',
+    'compose.rpm-proxy.yaml', 'oscar-rpm-proxy.sh', 'oscar-rpm-proxy.ps1',
+    'docker/rpm-proxy/Dockerfile', 'docker/rpm-proxy/oscar_rpm_proxy/main.py',
+    'oscar-storage.sh', 'oscar-storage.ps1', 'oscar-usb-backup.sh', 'oscar-usb-backup.ps1', 'oscar-usb-backup-engine.sh',
+    'configure-ubuntu-host.sh', 'configure-windows-host.ps1', 'validate-storage-archive.sh',
+    'ubuntu/README.md', 'ubuntu/site-network.example.env', 'ubuntu/ansible-site-hosts.yml',
+    'ubuntu/create-autoinstall-usb.bat', 'ubuntu/create-autoinstall-usb.sh', 'ubuntu/create-autoinstall-usb.ps1', 'ubuntu/oscar-firstboot-wizard.sh',
+    'ubuntu/autoinstall/user-data.yaml', 'ubuntu/autoinstall/meta-data',
+    'ubuntu/netplan/01-single-nic-static.yaml.example',
+    'ubuntu/netplan/02-dual-nic-operator-and-sensor-vlan.yaml.example',
     'postgis/archive-wal.sh', 'postgis/merge-wal-restore.sh', 'postgis/prepare-restore.sh',
     'docker/oscar/Dockerfile', 'docker/oscar/entrypoint.sh',
     'docker/oscar/archive-object-helper.sh',
@@ -94,7 +104,17 @@ const expected = [
     'documentation/STATUS_OF_HEALTH.md', 'documentation/TRANSLATION_SYSTEM.md',
     'documentation/STORAGE_ARCHITECTURE.md', 'documentation/DATA_LIFECYCLE.md',
     'documentation/ARCHIVE_FORMAT.md', 'documentation/BACKUP_RESTORE.md',
-    'documentation/STORAGE_OPERATIONS.md', 'documentation/daily-file-journal-v1.md',
+    'documentation/STORAGE_OPERATIONS.md', 'documentation/DIAGNOSTICS_AND_FLIGHT_RECORDER.md',
+    'documentation/REGRESSION_AND_RELEASE_CERTIFICATION.md',
+    'documentation/UBUNTU_FIELD_SETUP_GUIDE.md',
+    'documentation/CONTINUAL_AND_USB_BACKUP_GUIDE.md',
+    'documentation/PLUGGABLE_EXTENSIONS_GUIDE.md',
+    'documentation/CARGO_UFF_INTEGRATION.md',
+    'documentation/RADIATION_DETECTOR_DRIVER_GUIDE.md',
+    'documentation/TRAINING_SANDBOX_GUIDE.md',
+    'documentation/LANE_WEBRELAY_GUIDE.md',
+    'documentation/RPM_EDGE_PROXY_GUIDE.md',
+    'documentation/daily-file-journal-v1.md',
     'documentation/retained-media-v1.md',
 ];
 for (const relative of expected) {
@@ -206,6 +226,12 @@ if (offline) {
 } else {
     if (!fs.existsSync(path.join(root, 'osh-node-oscar', 'web', 'video-guides', 'index.html'))) {
         fail('missing bundled in-app video guides at osh-node-oscar/web/video-guides/index.html');
+    }
+    for (const subtitleLocale of ['es', 'fr', 'el']) {
+        const sampleCaption = path.join(root, 'osh-node-oscar', 'web', 'video-guides', 'captions', subtitleLocale, '01-deployment-init-and-credentials.vtt');
+        if (!fs.existsSync(sampleCaption)) {
+            fail(`missing localized video subtitle track: osh-node-oscar/web/video-guides/captions/${subtitleLocale}/01-deployment-init-and-credentials.vtt`);
+        }
     }
     let standardConfig;
     try {

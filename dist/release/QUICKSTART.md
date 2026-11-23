@@ -1,11 +1,18 @@
 # OSCAR Quick Start
 
-OSCAR 3.11.0 deployment and storage operation are supported only on Windows 11 x86-64 with Docker
+OSCAR 3.11.10 deployment and storage operation are supported only on Windows 11 x86-64 with Docker
 Desktop/WSL 2 and Ubuntu Server 24.04 x86-64 with Docker Engine/Compose. macOS is limited to source
 inspection and non-deployment development; initialization, start, restart, upgrade, and storage
-operations fail closed there.
+operations fail closed there. Before sizing a host or configuring camera H.264 resolution, frame
+rate, and keyframe intervals for `1–50` RPMs and `2–100` cameras (or optional per-lane OCR and
+federation hub VMs), review *Recommended hardware and capacity sizing* in
+[`DEPLOYMENT.md`](DEPLOYMENT.md#recommended-hardware-and-capacity-sizing).
 
-> **Companion Video Guide:** Watch [Module 01 — Initialize OSCAR Deployment, Admin Credentials & TLS (`01-deployment-init-and-credentials.mp4`)](https://github.com/ORNL/oscar-video-guides/blob/main/videos/01-deployment-init-and-credentials.mp4) ([WebVTT captions](https://github.com/ORNL/oscar-video-guides/blob/main/captions/01-deployment-init-and-credentials.vtt)), or browse all 18 captioned workflow guides in [`docs/VIDEO_GUIDES.md`](https://github.com/ORNL/oscar/blob/main/docs/VIDEO_GUIDES.md).
+> **Companion Video Guide:** Watch [Module 01 — Initialize OSCAR Deployment, Admin Credentials & TLS (`01-deployment-init-and-credentials.mp4`)](https://github.com/ORNL/oscar-video-guides/blob/main/videos/01-deployment-init-and-credentials.mp4) ([WebVTT captions](https://github.com/ORNL/oscar-video-guides/blob/main/captions/01-deployment-init-and-credentials.vtt)), or browse all 29 captioned workflow guides (`en`, `es`, `fr`, `el`) in [`docs/VIDEO_GUIDES.md`](https://github.com/ORNL/oscar/blob/main/docs/VIDEO_GUIDES.md).
+>
+> **Try Everything Safely First (`oscar-sandbox`):** After `oscar init`, click **Guided Walkthrough** (*graduation-cap icon* in the top bar) or **Help (`?`)** (*circled question-mark icon*) to highlight console icons or launch the isolated **Hands-On Training Sandbox & Guided Academy** on `:8444` (`sudo bash oscar.sh sandbox start` on Ubuntu; `.\oscar.bat sandbox start` on Windows) to practice lane setup, live Rapiscan/camera monitoring, OCR, WCO UFF X-ray review, and alarm adjudication with zero writes to operational PostgreSQL or Parquet archives, then wipe 100% of practice data with `sandbox stop`. See [`TRAINING_SANDBOX_GUIDE.md`](../../docs/TRAINING_SANDBOX_GUIDE.md).
+>
+> **Side-by-Side Central Alarm Station (CAS) Rapiscan RPM Installations (`oscar-rpm-proxy`):** When installing OSCAR alongside an existing CAS across `1–50+` Rapiscan RPMs that accept only one TCP connection on `:1600`, run `sudo bash oscar.sh rpm-proxy configure --from-csv <lanes.csv> --start` (Ubuntu 24.04 recommended for `10–50` lanes or Virtual-IP `:1600` mode; `.\oscar.bat rpm-proxy` supported for small Port-Mapped sites) for real-time dual fan-out with `<= 4.0 s` disconnect detection. See [`RPM_EDGE_PROXY_GUIDE.md`](../../docs/RPM_EDGE_PROXY_GUIDE.md).
 
 ## Windows 11
 
@@ -31,8 +38,12 @@ operations fail closed there.
    New self-signed installations automatically include the host's active, non-container LAN IPv4
    and Tailscale IPv4/IPv6 addresses in the certificate. If clients will use a stable site-DNS or Tailscale
    MagicDNS name other than the primary hostname, add it with `--tls-san` on Ubuntu or `-TlsSan`
-   on Windows during initialization.
-7. Open the URL printed by setup, normally `https://oscar.local/sensorhub/admin`.
+   on Windows during initialization. Once OSCAR converts that initial password into a salted PBKDF2
+   hash on first boot, `init` automatically scrubs the plaintext secret from `secrets/oscar-admin-password.txt`
+   (replacing it with a non-empty `# CONSUMED_AT_INIT` marker unless `OSCAR_KEEP_BOOTSTRAP_SECRET=true` is set).
+7. Open the URL printed by setup, normally `https://oscar.local/` (for the OSCAR Viewer and **Users & Access** at `/users`) or `https://oscar.local/sensorhub/admin`. Sessions with **Keep me signed in until I log out** enabled stay signed in across browser restarts, server reboots, and `oscar upgrade` until explicit **Log Out** or administrator revocation; open **Users & Access (`/users`)** in OSCAR Viewer to add individual `Administrator`, `Operator`, or read-only `Viewer` accounts, bulk-enroll a CSV/Excel user list (`Bulk Enroll`) to generate ready-to-send startup text messages and 1-tap Passkey/Password setup QR codes (`/login/enroll?token=oscar_inv_...`, plus readable fallback codes for phone-free facilities), enroll offline WebAuthn / FIDO2 Passkeys or YubiKeys (changing your local OSCAR password is completely independent of any Octelium Zero-Trust tunnel password), or mint scoped Federation Service Tokens (`oscar_fed_...`) and click **Open Servers Page (Federation Token Mode)** (`/servers?auth=bearer`) on the monitoring/HQ viewer to connect remote nodes.
+   - **What LAN & local workstations need for Passkeys:** While PBKDF2 password sign-in works on both domain names and raw LAN IPs, browsers require **(a)** a domain name (such as `https://oscar.local`, or distinct per-node names like `https://oscar.ubuntu` and `https://oscar.win` when running multiple OSCAR servers on the same LAN) mapped in site router Local DNS or client `hosts` files, and **(b)** a trusted HTTPS certificate without bypassed certificate warnings (`certutil -addstore -f Root .\server.crt` on Windows, `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain server.crt` with an `<= 825`-day leaf/CA certificate on macOS, or `update-ca-certificates` + Chrome NSS `certutil -d sql:$HOME/.pki/nssdb` on Linux). If a Passkey-only installation is later moved to a new domain and no administrator remembers a local fallback password, run `sudo bash oscar.sh reset-admin-password` (Ubuntu) or `.\oscar.bat reset-admin-password` (Windows Administrator) on the host to set a local recovery password with zero downtime, sign in once, and enroll a new Passkey for the new domain (see `DEPLOYMENT.md` for bare-metal LUKS2, `sudo`, and SSH hardening).
+   - **Optional self-hosted multi-site remote access & centralized SSO (`ORNL/oscar-federation-hub`):** If you want outbound-only HTTPS remote access across firewalled sites plus one place to add or remove users across all federated OSCAR portals (while keeping local offline Passkeys/passwords active on each site), deploy [`ORNL/oscar-federation-hub`](https://github.com/ORNL/oscar-federation-hub) on a central Linux VM (`./oscar-hub.sh init --domain hub.example.org --with-authentik`), register each OSCAR site (`./oscar-hub.sh add-site north-gate --with-trusted-headers`), attach the site's outbound connector (`sudo bash oscar-remote-access.sh configure --domain hub.example.org --service north-gate --token-file north-gate.token` on Ubuntu or `.\oscar-remote-access.ps1 configure` on Windows), and paste the printed OIDC / Trusted Tunnel values into **Users & Access -> Sign-In & SSO Policy**. See `DEPLOYMENT.md` (*Turnkey self-hosted federated remote access & SSO*) for the step-by-step walkthrough.
 
 Setup creates deployment-specific database credentials, defaults `OSCAR_BACKUP_MODE` to `disabled`,
 and persists the absolute archive path (and the backup path only when `single` mode is selected) under the sibling `oscar-storage` directory. The legacy-WAL
@@ -69,14 +80,58 @@ organization's behalf.
 
 ## Ubuntu Server 24.04
 
-Official offline bundles are Windows-only. Install Docker Engine and the Docker Compose plugin,
-extract the connected Ubuntu release, and run:
+For step-by-step instructions tailored to users unfamiliar with Ubuntu or OSCAR—including bootable USB links, **off-site hotel-room Wi-Fi/DHCP staging with 1-command static-IP on-site cutover**, **bare-metal air-gapped USB setup with zero internet and zero DHCP**, declarative `autoinstall`/Netplan/Ansible YAML files, and **discovering unknown camera/RPM IP addresses**—read [`UBUNTU_FIELD_SETUP_GUIDE.md`](../../docs/UBUNTU_FIELD_SETUP_GUIDE.md).
+
+1. Choose `oscar-3.11.10-ubuntu-x86_64-offline-full.zip` for air-gapped sites without internet (or slow hotel Wi-Fi), or `oscar-3.11.10.zip` when installing over fast internet.
+2. Prepare the Ubuntu 24.04 host (installs official Docker Engine + Compose v2 from bundled `.deb`s or APT, expands Ubuntu's default `100 GiB` LVM root volume if `--expand-lvm` is passed, masks sleep/suspend, disables automatic unattended-upgrade reboots, bounds offline boot-wait timeouts, and tunes socket buffers):
+
+```sh
+sudo bash verify-bundle.sh   # when using ubuntu-x86_64-offline-full
+sudo bash oscar.sh prepare-host --expand-lvm --configure-ufw
+```
+
+3. **If staging off-site (for example, on hotel Wi-Fi/DHCP before driving to an offline/static-IP site):** identify physical ports, pre-stage your site schematic static IPs *without* dropping hotel internet, and initialize OSCAR (which automatically embeds your staged site IPs into `tls/server.crt`):
+
+```sh
+sudo bash oscar.sh identify-nics --watch
+sudo bash oscar.sh stage-site-network
+sudo bash oscar.sh init
+```
+
+   Once you arrive on-site and plug in the site switches, activate the static IPs in one command:
+
+```sh
+sudo bash oscar.sh apply-site-network
+```
+
+4. **If already connected on-site with static IPs configured**, simply run:
 
 ```sh
 sudo bash oscar.sh init
 ```
 
-On a graphical Ubuntu installation, double-click the executable `oscar.sh` launcher to open the same interactive menu. Ubuntu Server administrators use the command above because the server has no desktop environment.
+On a graphical Ubuntu installation, double-click the executable `oscar.sh` launcher to open the same interactive menu. Ubuntu Server administrators use the terminal commands above (and can run `sudo bash oscar.sh discover-devices --interface <NIC>` if RPM or camera IPs are unknown).
+
+## Console Navigation Bar & Visual Icon Guide
+
+Every page and global tool in OSCAR Viewer pairs its text title with a consistent visual icon symbol (which can also be spotlighted live on screen from **Guided Walkthrough** — *graduation-cap icon* — or **Help (`?`)** — *circled question-mark icon*):
+
+| Page / Tool | Route | Visual Icon Symbol | Purpose |
+| :--- | :--- | :--- | :--- |
+| **Dashboard** | `/` | **Four-tile grid icon** | Live priority alarm queue, compact per-lane health cards, site map & quick adjudication |
+| **Events** | `/event-log` | **Warning-triangle (`!`) icon** | Full-database historical event search, CQL filters, Saved Queries & UpSet analytics |
+| **Status of Health** | `/health` | **Heart-pulse monitor icon** | Per-lane RPM/camera online status, gamma/neutron faults, tamper (`TT`/`TC`), and extended occupancy |
+| **Site Map** | `/map` | **Map-pin icon** | Georeferenced portal lane markers (online vector tiles or offline `.pmtiles` basemaps) |
+| **National Summary** | `/national-view` | **Connected-nodes icon** | Multi-lane / multi-site occupancy, alarm, and fault totals |
+| **Reports & Analytics** | `/report` | **Bar-chart icon** | 6 report types (`PDF`, `CSV`, `JSON`, `XLSX`) and UpSet co-occurrence analytics |
+| **Alarm Transfer** | `/alarm-transfer` | **QR-viewfinder icon** | Offline camera/file import and export of air-gapped QR alarm handoff packages |
+| **Users & Access** | `/users` | **Person-and-gear icon** | Administrator user/role management, bulk enrollment QR invites, Passkeys, and SSO policy |
+| **USB Backups** | `/usb-backups` | **USB-trident icon** | Zero-downtime continual/occasional USB NVMe incremental backups and safe eject |
+| **Runtime Extensions** | `/extensions` | **Puzzle-piece icon** | Hot-swappable OCR rules/models, `.pmtiles` maps, isotope libraries, CAs, policy packs, EML & Cargo UFF |
+| **Servers & Nodes** | `/servers` | **Cloud icon** | Local and federated remote OSCAR nodes (`oscar_fed_...` bearer or same-origin session) |
+| **Guided Walkthrough** | Top bar | **Graduation-cap icon** | Anytime read-only live refresher (`:443`) and 1-click `:8444` Practice Sandbox launcher |
+| **Help (`?`)** | Top bar | **Circled question-mark icon** | 4-language operator quick guide, glossary, 29 captioned videos, icon spotlights & Support Bundle export |
+| **Settings** | Top bar | **Gear icon** | Language selector (`en`, `es`, `fr`, `el`), Light/Dark theme, and alarm audio preferences |
 
 ## Routine administration
 
@@ -166,7 +221,7 @@ After full acceptance it atomically replaces the HMAC-authenticated `CURRENT` po
 the previous non-current fully accepted schema-v2 snapshot be removed. A confirmation failure
 leaves the previous `CURRENT` authoritative. The explicit
 `backup-verify` command can run with PostgreSQL stopped: it uses a one-shot utility container and
-treats the live catalog receipt as optional. Restore additionally requires matching 3.11.0 backup,
+treats the live catalog receipt as optional. Restore additionally requires matching 3.11.10 backup,
 current-release, and backed-up release-config identities plus every exact local Compose image.
 Plan backup capacity for the old snapshot plus one complete replacement: one snapshot is the
 steady-state logical result, not the peak space required while `CURRENT` is changing. If a crash
@@ -195,10 +250,10 @@ replaces the selected backup's `VERIFIED` marker and normalizes permissions. It 
 one restorable. An optional live catalog update occurs only after deployment-volume ownership is
 proven.
 
-OSCAR 3.11.0's full storage profile is initialized with a new database and standard configuration.
+OSCAR 3.11.10's full storage profile is initialized with a new database and standard configuration.
 An upgrade preserves the old `config.json` and PostgreSQL volume, so it does not silently convert a
 pre-3.11.0 system to the tiered archive or enable PostgreSQL data checksums. Use a fresh deployment
-for the 3.11.0 test systems. Preserve and separately migrate any production history that policy
+for the 3.11.10 test systems. Preserve and separately migrate any production history that policy
 requires.
 
 If a deliberately retained pre-label deployment uses unlabelled Docker volumes, follow the

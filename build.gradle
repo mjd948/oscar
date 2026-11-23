@@ -2,7 +2,7 @@ apply from: gradle.oshCoreDir + '/common.gradle'
 description = ''
 
 allprojects {
-    version = "3.11.0"
+    version = "3.11.10"
 }
 
 subprojects {
@@ -104,15 +104,26 @@ distributions{
                     include 'ARCHIVE_FORMAT.md'
                     include 'BACKUP_RESTORE.md'
                     include 'STORAGE_OPERATIONS.md'
+                    include 'DIAGNOSTICS_AND_FLIGHT_RECORDER.md'
+                    include 'REGRESSION_AND_RELEASE_CERTIFICATION.md'
+                    include 'UBUNTU_FIELD_SETUP_GUIDE.md'
+                    include 'CONTINUAL_AND_USB_BACKUP_GUIDE.md'
+                    include 'PLUGGABLE_EXTENSIONS_GUIDE.md'
+                    include 'CARGO_UFF_INTEGRATION.md'
+                    include 'RADIATION_DETECTOR_DRIVER_GUIDE.md'
+                    include 'TRAINING_SANDBOX_GUIDE.md'
+                    include 'LANE_WEBRELAY_GUIDE.md'
+                    include 'RPM_EDGE_PROXY_GUIDE.md'
                     filesMatching('STORAGE_ARCHITECTURE.md') {
                         filter { line ->
                             line.replace('../include/osh-oakridge-modules/docs/', '')
                                 .replace('https://github.com/ORNL/osh-oakridge-modules/blob/main/docs/', '')
                         }
                     }
-                    filesMatching(['RELEASE_NOTES_AND_UPGRADE_GUIDE.md', 'EML_INTEGRATION.md']) {
+                    filesMatching(['RELEASE_NOTES_AND_UPGRADE_GUIDE.md', 'EML_INTEGRATION.md', 'LIVE_VIDEO.md', 'UBUNTU_FIELD_SETUP_GUIDE.md', 'CONTINUAL_AND_USB_BACKUP_GUIDE.md', 'PLUGGABLE_EXTENSIONS_GUIDE.md', 'CARGO_UFF_INTEGRATION.md', 'RADIATION_DETECTOR_DRIVER_GUIDE.md', 'TRAINING_SANDBOX_GUIDE.md', 'LANE_WEBRELAY_GUIDE.md', 'RPM_EDGE_PROXY_GUIDE.md']) {
                         filter { line ->
-                            line.replace('../dist/release/', '')
+                            line.replace('../dist/release/ubuntu/', '../../ubuntu/')
+                                .replace('../dist/release/', '')
                                 .replace('../include/osh-oakridge-modules/docs/', '')
                                 .replace('https://github.com/ORNL/osh-oakridge-modules/blob/main/docs/', '')
                                 .replace('../include/osh-oakridge-modules/services/sensorhub-service-oscar/src/main/resources/com/botts/impl/service/oscar/i18n/', 'operator-manual/')
@@ -124,7 +135,7 @@ distributions{
                     include 'daily-file-journal-v1.md'
                     include 'retained-media-v1.md'
                 }
-                filesMatching('DEPLOYMENT.md') {
+                filesMatching(['DEPLOYMENT.md', 'QUICKSTART.md']) {
                     filter { line -> line.replace('../../docs/', '') }
                 }
             }
@@ -157,15 +168,26 @@ distributions{
                     include 'ARCHIVE_FORMAT.md'
                     include 'BACKUP_RESTORE.md'
                     include 'STORAGE_OPERATIONS.md'
+                    include 'DIAGNOSTICS_AND_FLIGHT_RECORDER.md'
+                    include 'REGRESSION_AND_RELEASE_CERTIFICATION.md'
+                    include 'UBUNTU_FIELD_SETUP_GUIDE.md'
+                    include 'CONTINUAL_AND_USB_BACKUP_GUIDE.md'
+                    include 'PLUGGABLE_EXTENSIONS_GUIDE.md'
+                    include 'CARGO_UFF_INTEGRATION.md'
+                    include 'RADIATION_DETECTOR_DRIVER_GUIDE.md'
+                    include 'TRAINING_SANDBOX_GUIDE.md'
+                    include 'LANE_WEBRELAY_GUIDE.md'
+                    include 'RPM_EDGE_PROXY_GUIDE.md'
                     filesMatching('STORAGE_ARCHITECTURE.md') {
                         filter { line ->
                             line.replace('../include/osh-oakridge-modules/docs/', '')
                                 .replace('https://github.com/ORNL/osh-oakridge-modules/blob/main/docs/', '')
                         }
                     }
-                    filesMatching(['RELEASE_NOTES_AND_UPGRADE_GUIDE.md', 'EML_INTEGRATION.md']) {
+                    filesMatching(['RELEASE_NOTES_AND_UPGRADE_GUIDE.md', 'EML_INTEGRATION.md', 'LIVE_VIDEO.md', 'UBUNTU_FIELD_SETUP_GUIDE.md', 'CONTINUAL_AND_USB_BACKUP_GUIDE.md', 'PLUGGABLE_EXTENSIONS_GUIDE.md', 'CARGO_UFF_INTEGRATION.md', 'RADIATION_DETECTOR_DRIVER_GUIDE.md', 'TRAINING_SANDBOX_GUIDE.md', 'LANE_WEBRELAY_GUIDE.md', 'RPM_EDGE_PROXY_GUIDE.md']) {
                         filter { line ->
-                            line.replace('../dist/release/', '')
+                            line.replace('../dist/release/ubuntu/', '../ubuntu/')
+                                .replace('../dist/release/', '')
                                 .replace('../include/osh-oakridge-modules/docs/', '')
                                 .replace('https://github.com/ORNL/osh-oakridge-modules/blob/main/docs/', '')
                                 .replace('../include/osh-oakridge-modules/services/sensorhub-service-oscar/src/main/resources/com/botts/impl/service/oscar/i18n/', 'operator-manual/')
@@ -177,7 +199,7 @@ distributions{
                     include 'daily-file-journal-v1.md'
                     include 'retained-media-v1.md'
                 }
-                filesMatching('DEPLOYMENT.md') {
+                filesMatching(['DEPLOYMENT.md', 'QUICKSTART.md']) {
                     filter { line -> line.replace('../../docs/', '') }
                 }
             }
@@ -201,8 +223,13 @@ distributions{
                 from('docs/video-guides') {
                     include 'index.html'
                     include 'videos/*.mp4'
-                    include 'captions/*.vtt'
-                    include 'captions/*.srt'
+                    include 'captions/**/*.vtt'
+                    include 'captions/**/*.srt'
+                }
+            }
+            into("osh-node-oscar/web/manual-screenshots") {
+                from('include/osh-oakridge-modules/docs/oscar-operator-manual/images') {
+                    include '*.png'
                 }
             }
             into("osh-node-oscar/") {
@@ -235,17 +262,35 @@ distributions{
                 include 'DEPLOYMENT.md'
                 include 'QUICKSTART.md'
                 include 'compose.yaml'
+                include 'compose.octelium.yaml'
+                include 'compose.rpm-proxy.yaml'
+                include 'compose.sandbox.yaml'
+                include 'configure-ubuntu-host.sh'
                 include 'configure-windows-host.ps1'
                 include 'docker/gateway/default.conf'
+                include 'docker/rpm-proxy/**'
+                include 'docker/tunnel/Dockerfile'
+                include 'docker/tunnel/entrypoint.sh'
                 include 'docker/oscar/archive-object-helper.sh'
                 include 'docker/oscar/atomic-publish.c'
                 include 'docker/oscar/Dockerfile'
                 include 'docker/oscar/entrypoint.sh'
                 include 'installers/README.md'
+                include 'oscar-remote-access.ps1'
+                include 'oscar-remote-access.sh'
+                include 'oscar-rpm-proxy.ps1'
+                include 'oscar-rpm-proxy.sh'
+                include 'oscar-sandbox.ps1'
+                include 'oscar-sandbox.sh'
+                include 'oscar-update.ps1'
+                include 'oscar-update.sh'
                 include 'oscar-setup.ps1'
                 include 'oscar-setup.sh'
                 include 'oscar-storage.ps1'
                 include 'oscar-storage.sh'
+                include 'oscar-usb-backup.ps1'
+                include 'oscar-usb-backup.sh'
+                include 'oscar-usb-backup-engine.sh'
                 include 'oscar.bat'
                 include 'oscar.sh'
                 include 'postgis/Dockerfile'
@@ -254,13 +299,27 @@ distributions{
                 include 'postgis/prepare-restore.sh'
                 include 'postgis/init-app-role.sh'
                 include 'postgis/init-extensions.sql'
+                include 'ubuntu/README.md'
+                include 'ubuntu/site-network.example.env'
+                include 'ubuntu/ansible-site-hosts.yml'
+                include 'ubuntu/create-autoinstall-usb.bat'
+                include 'ubuntu/create-autoinstall-usb.sh'
+                include 'ubuntu/create-autoinstall-usb.ps1'
+                include 'ubuntu/oscar-firstboot-wizard.sh'
+                include 'ubuntu/autoinstall/user-data.yaml'
+                include 'ubuntu/autoinstall/meta-data'
+                include 'ubuntu/netplan/01-single-nic-static.yaml.example'
+                include 'ubuntu/netplan/02-dual-nic-operator-and-sensor-vlan.yaml.example'
                 include 'validate-storage-archive.sh'
                 include 'verify-bundle.ps1'
                 include 'verify-bundle.sh'
                 filesMatching('.env.example') {
                     filter { line -> line.startsWith('OSCAR_VERSION=') ? "OSCAR_VERSION=${project.version}" : line }
                 }
-                filesMatching('DEPLOYMENT.md') {
+                filesMatching('ubuntu/README.md') {
+                    filter { line -> line.replace('../../../docs/', '../documentation/') }
+                }
+                filesMatching(['DEPLOYMENT.md', 'QUICKSTART.md']) {
                     filter { line -> line.replace('../../docs/', 'documentation/') }
                 }
                 filesMatching('**/*.sh') {

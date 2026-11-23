@@ -1,6 +1,6 @@
 # Live Video
 
-OSCAR 3.11.0 starts Lane Details video only after the HLS stream has received a decodable H.264 keyframe. Until that point, the Viewer shows **Preparing live video** instead of presenting an empty player. If preparation or playback cannot recover within the bounded retry period, the Viewer shows a localized error and a **Retry** action.
+OSCAR 3.11.10 starts Lane Details video only after the HLS stream has received a decodable H.264 keyframe. Until that point, the Viewer shows **Preparing live video** instead of presenting an empty player. If preparation or playback cannot recover within the bounded retry period, the Viewer shows a localized error and a **Retry** action.
 
 > **Companion Video Guides:** Watch [Module 11 — Inspect Live Lane Camera Stream & Gamma/Neutron Waveforms (`11-live-lane-video-and-charts.mp4`)](https://github.com/ORNL/oscar-video-guides/blob/main/videos/11-live-lane-video-and-charts.mp4) and [Module 13 — Adjudicate Event with 5-Frame Media, Daily File & Report (`13-event-details-adjudication-and-daily-file.mp4`)](https://github.com/ORNL/oscar-video-guides/blob/main/videos/13-event-details-adjudication-and-daily-file.mp4) in [VIDEO_GUIDES.md](VIDEO_GUIDES.md#11-live-lane-video-and-charts).
 
@@ -29,7 +29,7 @@ OSCAR supports multiple cameras on a single lane out of the box across CSV impor
 
   3. **Maximum `64 MiB` total JPEG bytes per event** across all published frames.
 - **Fallback behavior if exceeded:** If a lane's published media sets exceed `8` cameras, `120 MP`, or `64 MiB` for an event, `/buckets/videos/media/{eventId}` rejects the response (`HTTP 400`) and Event Details falls back to legacy MP4 playback (`videoPaths`), which remains available only during the 24-hour MP4 rollback grace window. Keep multi-camera lanes within the resolution table above so long-term five-frame evidence remains viewable after source MP4 pruning.
-- **Site-wide host & UI sizing:** Each configured camera module maintains an active packet-copy (`-c copy`) RTSP reader, so site-wide network ingress (~`3–6 Mbps` per H.264 stream), FFmpeg worker threads, and asynchronous JPEG extraction scale with total cameras across all lanes. On narrow (`1280×800`) displays, Dashboard lane rows fit `3–4` camera status pills inline comfortably before wrapping onto a second line.
+- **Site-wide host & UI sizing:** Each configured camera module maintains an active packet-copy (`-c copy`) RTSP reader, so site-wide network ingress (~`1–2 Mbps` per `720p @ 15 fps` stream, ~`2.5–4 Mbps` per `1080p @ 15 fps` stream, or ~`4–8 Mbps` per `1080p @ 30 fps` stream), FFmpeg worker threads, and asynchronous JPEG extraction scale with total cameras across all lanes. See *Recommended hardware and capacity sizing* in [`dist/release/DEPLOYMENT.md`](../dist/release/DEPLOYMENT.md#recommended-hardware-and-capacity-sizing) for CPU, RAM, NVMe, and OS recommendations across `2–100` cameras and `1–50` RPMs. On narrow (`1280×800`) displays, Dashboard lane rows fit `3–4` camera status pills inline comfortably before wrapping onto a second line.
 
 ### Built-in loopback RTSP proxy
 
@@ -125,7 +125,7 @@ and the four-command pending cap prevents unbounded growth.
 | --- | --- |
 | Preparing lasts longer than expected | Check camera connectivity, confirm the stream is H.264, and measure the source keyframe interval. A long GOP directly increases worst-case startup time. |
 | Live video could not be played | Restore camera/network reachability, inspect FFmpeg reconnect logs, and select **Retry**. |
-| Player remains at `0:00` | Confirm the deployed OSCAR 3.11.0 image includes the keyframe-gated HLS and Viewer recovery fixes; inspect the first segment for a leading keyframe and valid H.264 parameter sets. |
+| Player remains at `0:00` | Confirm the deployed OSCAR 3.11.10 image includes the keyframe-gated HLS and Viewer recovery fixes; inspect the first segment for a leading keyframe and valid H.264 parameter sets. |
 | Emulator playback is slow to start | Run the emulator asset-preparation and validation scripts, then recreate the publisher containers. Runtime publishing should continue to use stream copy rather than live transcoding. |
 | Recordings fail after a live-video change | Treat this as a regression. Live HLS and MP4 share camera input but have separate output rules; run the recording acceptance test before release. |
 | Alarm recording preparation times out | Confirm the camera produces an H.264 keyframe within five seconds and that the packet path has no write failure. OSCAR deliberately rejects the OPEN and removes the hidden partial instead of attaching a zero-packet MP4. |

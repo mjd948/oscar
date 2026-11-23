@@ -651,8 +651,22 @@ function Assert-ProtectedAdministratorAcl(
     $acl = Get-Acl -LiteralPath $Path
     $ownerSid = ([Security.Principal.NTAccount]$acl.Owner).Translate([Security.Principal.SecurityIdentifier]).Value
     $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $administratorSids = @($currentSid, 'S-1-5-18', 'S-1-5-32-544')
-    $allowedSids = @($administratorSids + $AllowedAdditionalWriteSids)
+    $administratorSids = New-Object System.Collections.Generic.List[string]
+    foreach ($baseSid in @($currentSid, 'S-1-5-18', 'S-1-5-32-544')) {
+        if ($baseSid -and -not $administratorSids.Contains($baseSid)) { [void]$administratorSids.Add($baseSid) }
+    }
+    if ($currentSid -eq 'S-1-5-18') {
+        # When invoked by a SYSTEM scheduled task (e.g. OSCAR-UpdateAgent or OSCAR-UsbBackupAgent),
+        # recognize local Administrators who originally initialized the deployment directory.
+        try {
+            foreach ($adm in @(Get-LocalGroupMember -SID 'S-1-5-32-544' -ErrorAction SilentlyContinue)) {
+                if ($adm -and $adm.SID -and $adm.SID.Value -and -not $administratorSids.Contains($adm.SID.Value)) {
+                    [void]$administratorSids.Add($adm.SID.Value)
+                }
+            }
+        } catch {}
+    }
+    $allowedSids = @($administratorSids.ToArray() + $AllowedAdditionalWriteSids)
     if (-not $acl.AreAccessRulesProtected -or $ownerSid -notin $administratorSids) {
         Fail "$Description is not protected and owned by an administrator: $Path"
     }
@@ -2326,12 +2340,33 @@ tar --exclude='./archive' --exclude='./backups' --exclude='./duckdb-tmp' --exclu
 
     $encryptedSecrets = Join-Path $work 'deployment-secrets.tar.gz.enc'
     [IO.File]::WriteAllBytes($encryptedSecrets, [byte[]]@())
+    $remoteAccessSrc = Join-Path (Split-Path -Parent $ArchiveDirectory) 'remote-access'
+    $remoteAccessCfg = Join-Path $remoteAccessSrc 'octelium.env'
+    $secretVolumes = @('--volume', "${ScriptRoot}:/deployment:ro", '--volume', "${encryptedSecrets}:/deployment-secrets.tar.gz.enc", '--volume', "${BackupKeyFile}:/backup-key.txt:ro")
+    if ((Test-Path -LiteralPath $remoteAccessSrc -PathType Container) -and (Test-Path -LiteralPath $remoteAccessCfg -PathType Leaf)) {
+        $secretVolumes += @('--volume', "${remoteAccessSrc}:/remote-access-src:ro")
+    }
     $encryptSecrets = @'
-tar -C /deployment --no-recursion -czf /tmp/secrets.tar.gz .env secrets secrets/backup-key.txt secrets/oscar-admin-password.txt secrets/oscar-db-password.txt secrets/postgres-bootstrap-password.txt tls tls/server.crt tls/server.key
+if [ -d /remote-access-src ] && [ -f /remote-access-src/octelium.env ] && [ ! -L /remote-access-src/octelium.env ]; then
+    mkdir -p /tmp/secret-stage/secrets /tmp/secret-stage/tls /tmp/secret-stage/remote-access
+    cp /deployment/.env /tmp/secret-stage/.env
+    cp /deployment/secrets/backup-key.txt /deployment/secrets/oscar-admin-password.txt /deployment/secrets/oscar-db-password.txt /deployment/secrets/postgres-bootstrap-password.txt /tmp/secret-stage/secrets/
+    cp /deployment/tls/server.crt /deployment/tls/server.key /tmp/secret-stage/tls/
+    cp /remote-access-src/octelium.env /tmp/secret-stage/remote-access/octelium.env
+    if [ -f /remote-access-src/octelium-token.txt ] && [ ! -L /remote-access-src/octelium-token.txt ]; then
+        cp /remote-access-src/octelium-token.txt /tmp/secret-stage/remote-access/octelium-token.txt
+        tar -C /tmp/secret-stage --no-recursion -czf /tmp/secrets.tar.gz .env secrets secrets/backup-key.txt secrets/oscar-admin-password.txt secrets/oscar-db-password.txt secrets/postgres-bootstrap-password.txt tls tls/server.crt tls/server.key remote-access remote-access/octelium.env remote-access/octelium-token.txt
+    else
+        tar -C /tmp/secret-stage --no-recursion -czf /tmp/secrets.tar.gz .env secrets secrets/backup-key.txt secrets/oscar-admin-password.txt secrets/oscar-db-password.txt secrets/postgres-bootstrap-password.txt tls tls/server.crt tls/server.key remote-access remote-access/octelium.env
+    fi
+    rm -rf /tmp/secret-stage
+else
+    tar -C /deployment --no-recursion -czf /tmp/secrets.tar.gz .env secrets secrets/backup-key.txt secrets/oscar-admin-password.txt secrets/oscar-db-password.txt secrets/postgres-bootstrap-password.txt tls tls/server.crt tls/server.key
+fi
 openssl enc -aes-256-cbc -pbkdf2 -salt -pass file:/backup-key.txt -in /tmp/secrets.tar.gz -out /deployment-secrets.tar.gz.enc
 rm -f /tmp/secrets.tar.gz
 '@
-    Invoke-DockerShellInput $encryptSecrets @('run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--cap-add', 'DAC_READ_SEARCH', '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=16m', '--workdir', '/', '--user', '0', '--entrypoint', 'sh', '--volume', "${ScriptRoot}:/deployment:ro", '--volume', "${encryptedSecrets}:/deployment-secrets.tar.gz.enc", '--volume', "${BackupKeyFile}:/backup-key.txt:ro", $image, '-seu')
+    Invoke-DockerShellInput $encryptSecrets (@('run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--cap-add', 'DAC_READ_SEARCH', '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=16m', '--workdir', '/', '--user', '0', '--entrypoint', 'sh') + $secretVolumes + @($image, '-seu'))
     $releaseConfigFiles = @(
         '.dockerignore', '.env.example', 'DEPLOYMENT.md', 'QUICKSTART.md', 'compose.yaml',
         'docker/gateway/default.conf', 'docker/oscar/archive-object-helper.sh', 'docker/oscar/atomic-publish.c', 'docker/oscar/Dockerfile', 'docker/oscar/entrypoint.sh',
@@ -3035,6 +3070,20 @@ function Install-PreparedDeploymentCredentials([string]$Source, [string]$Destina
             }
         }
         Move-Item -LiteralPath (Join-Path $stage '.env'), (Join-Path $stage 'secrets'), (Join-Path $stage 'tls') -Destination $Destination
+        $restoredRa = Join-Path $Source 'remote-access'
+        if ((Test-Path -LiteralPath $restoredRa -PathType Container) -and (Test-Path -LiteralPath (Join-Path $restoredRa 'octelium.env') -PathType Leaf)) {
+            $targetRa = Join-Path (Split-Path -Parent $ArchiveDirectory) 'remote-access'
+            New-Item -ItemType Directory -Force -Path $targetRa | Out-Null
+            $restoredTok = Join-Path $restoredRa 'octelium-token.txt'
+            $targetTok = Join-Path $targetRa 'octelium-token.txt'
+            if (Test-Path -LiteralPath $restoredTok -PathType Leaf) {
+                Copy-Item -LiteralPath $restoredTok -Destination $targetTok -Force
+            }
+            $raLines = [IO.File]::ReadAllLines((Join-Path $restoredRa 'octelium.env')) | ForEach-Object {
+                if ($_ -match '^OCTELIUM_TOKEN_FILE=') { "OCTELIUM_TOKEN_FILE=$($targetTok -replace '\\', '/')" } else { $_ }
+            }
+            [IO.File]::WriteAllLines((Join-Path $targetRa 'octelium.env'), $raLines, $Utf8NoBom)
+        }
         $complete = $true
     } finally {
         if ($complete -and (Test-Path -LiteralPath $stage)) {
@@ -3208,6 +3257,10 @@ function Restore-Backup([string]$Id, [string]$Confirmation) {
         Confirm-CleanRestoredPostgresRuntime ([UInt64]$restoreProof.Timeline) ([string]$restoreProof.EpochId)
         $restoredPostgresRunning = $false
         Invoke-Compose @('up', '--detach', '--no-deps', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '300', 'oscar', 'gateway')
+        $remoteAccessScript = Join-Path $ScriptRoot 'oscar-remote-access.ps1'
+        if (($env:OSCAR_STORAGE_TEST_MODE -ne '1' -or $env:OSCAR_REMOTE_ACCESS_TEST_ALLOW -eq '1') -and (Test-Path -LiteralPath $remoteAccessScript)) {
+            try { & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $remoteAccessScript sync } catch { Write-Warning "Could not sync remote-access tunnel after restore: $($_.Exception.Message)" }
+        }
     } catch {
         if ($restoredPostgresRunning) {
             try { Invoke-Compose @('stop', 'postgres') } catch { Write-Warning "Could not stop PostgreSQL after restore validation failed: $($_.Exception.Message)" }

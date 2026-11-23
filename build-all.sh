@@ -36,6 +36,7 @@ node --test tools/update-version.test.js tools/collect-release-contributors.test
     :sensorhub-service-mqtt-hivemq:test \
     --tests org.sensorhub.impl.service.hivemq.TestWebSocketProxyDisconnect \
     :sensorhub-service-oscar:test \
+    :sensorhub-security-basic-session:test \
     :sensorhub-webui-oscar:test \
     :sensorhub-service-bucket:test \
     :sensorhub-service-dailyfile-journal:test \
@@ -47,6 +48,7 @@ node --test tools/update-version.test.js tools/collect-release-contributors.test
     --tests org.sensorhub.impl.utils.rad.cambio.CambioTempDirectoryTest \
     --tests org.sensorhub.impl.utils.rad.dailyfile.DailyFileAppenderTest \
     --tests org.sensorhub.impl.utils.rad.eml.EmlArchiveAndRuntimeTest \
+    --tests org.sensorhub.impl.utils.rad.webid.SpectroscopyAndTrustRegistryTest \
     --tests org.sensorhub.impl.utils.rad.output.OccupancyOutputConcurrencyTest
 
 ./gradlew --no-parallel \

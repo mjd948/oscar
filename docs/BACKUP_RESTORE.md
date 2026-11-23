@@ -1,6 +1,6 @@
-# OSCAR 3.11.0 backup, restore, and recovery
+# OSCAR 3.11.10 backup, restore, and recovery
 
-OSCAR 3.11.0 can create one coordinated recovery snapshot of the PostgreSQL cluster, application
+OSCAR 3.11.10 can create one coordinated recovery snapshot of the PostgreSQL cluster, application
 state, primary Parquet cold tier, release configuration, and encrypted deployment credentials.
 Fresh installations default to `OSCAR_BACKUP_MODE=disabled`; backup creation, verification, restore,
 and the retired prune command remain unavailable until an administrator explicitly changes the
@@ -13,6 +13,8 @@ out a restore drill on an isolated test host before relying on a deployment for 
 Run it only on supported Ubuntu Server 24.04 x86-64 or Windows 11 x86-64 Docker Desktop/WSL 2
 hosts; macOS deployment and storage operations fail closed.
 
+> **Multi-Year (`1–10` Year) Continual USB NVMe Sync, Mode Switching & Field Laptop Offloads:** For zero-downtime (`0s` outage) continual incremental backups onto an external USB 3.2 NVMe SSD, 1-command switching between `continual` and `occasional` modes, safe field USB `eject` → laptop copy (`COPY-TO-ANOTHER-DRIVE.bat` / `copy-to-another-drive.sh`) → hotplug auto-catch-up, and bare-metal migration of `400+ GiB` portals onto a new server, see the **[Continual & Occasional USB NVMe Incremental Backup Guide](CONTINUAL_AND_USB_BACKUP_GUIDE.md)**.
+
 > **Companion Video Guide:** Watch [Module 03 — Verify Parquet Cold Archive & Single-Snapshot Backup (`03-archive-and-snapshot-backup.mp4`)](https://github.com/ORNL/oscar-video-guides/blob/main/videos/03-archive-and-snapshot-backup.mp4) ([WebVTT captions](https://github.com/ORNL/oscar-video-guides/blob/main/captions/03-archive-and-snapshot-backup.vtt)) in [VIDEO_GUIDES.md](VIDEO_GUIDES.md#03-archive-and-snapshot-backup).
 
 ## What a coordinated backup contains
@@ -23,9 +25,9 @@ The current snapshot is stored under `${OSCAR_BACKUP_DIR}/<backup-id>`, where th
 | Object | Contents |
 | --- | --- |
 | `postgres/` | Plain-format `pg_basebackup` of the complete PostgreSQL cluster, with required WAL streamed into the backup |
-| `oscar-state.tar.gz` | Mutable `/var/lib/oscar` application state, including saved SensorHub configuration, journal, daily files, videos/JPEGs, reports, and adjudication artifacts; excludes the separately captured archive path, reproducible transient DuckDB scratch at `/var/lib/oscar/duckdb-tmp`, any legacy embedded backup mountpoint, and the verified image-owned links (`lib`, `web`, `rules`, `documentation`, `trusted_certificates`, `config`, and `logback.xml`) that the restored image recreates |
+| `oscar-state.tar.gz` | Mutable `/var/lib/oscar` application state, including saved SensorHub configuration (`config.json` PBKDF2 user/role records), `.moduledata/oscar-identity.json` (WebAuthn Passkey public keys, user Operational View scopes, Federation Service Tokens, OIDC/tunnel policy, and SHA-256 persistent session digests), journal, daily files, videos/JPEGs, reports, and adjudication artifacts; excludes the separately captured archive path, reproducible transient DuckDB scratch at `/var/lib/oscar/duckdb-tmp`, any legacy embedded backup mountpoint, and the verified image-owned links (`lib`, `web`, `rules`, `documentation`, `trusted_certificates`, `config`, and `logback.xml`) that the restored image recreates |
 | `archive.tar.gz` | Complete configured `/var/lib/oscar/archive` data tree, excluding the host-local `.oscar-storage-root` identity |
-| `deployment-secrets.tar.gz.enc` | `.env`, `secrets/`, and `tls/`, encrypted with AES-256-CBC and PBKDF2 using the external backup key |
+| `deployment-secrets.tar.gz.enc` | `.env`, `secrets/`, `tls/`, and (when configured under the deployment storage root) `remote-access/` (`octelium.env` and `octelium-token.txt`), encrypted with AES-256-CBC and PBKDF2 using the external backup key |
 | `release-config.tar.gz` | Non-secret Compose, image-build, sample environment, and release documentation files |
 | `epoch.json` | Backup UUID, backup ID, UTC creation time, OSCAR version, PostgreSQL LSN, archive root, and creation state |
 | `archive-generation-ids.txt` | Canonically sorted, duplicate-free UUIDs for the exact active/sealed archive generations captured by this backup; validation is streaming and bounded at 1,000,000 entries/37,000,000 bytes |
@@ -125,7 +127,7 @@ scale. The automated restore returns PostgreSQL to the consistent endpoint inclu
 
 Compose enables PostgreSQL data checksums for **new** clusters and WAL compression, but explicitly
 runs PostgreSQL with `archive_mode=off`. It sets no external archive command or timeout and mounts no
-host WAL directory. OSCAR 3.11.0 supports restore only to the consistency endpoint carried by the
+host WAL directory. OSCAR 3.11.10 supports restore only to the consistency endpoint carried by the
 selected base backup; it does not provide point-in-time recovery to an arbitrary timestamp or LSN.
 The restore promotes the recovered cluster onto a fresh timeline without consulting an external WAL
 archive.
@@ -138,7 +140,7 @@ entry/byte bounds. Both launchers stream this file while calculating its receipt
 the complete list into memory or construct an SQL UUID-array literal. A backup with no active or
 sealed generations uses a valid empty file (count and bytes zero, with the standard SHA-256 of empty
 content). The epoch must identify exactly OSCAR
-3.11.0, not merely any semantic version. Before destructive restore, OSCAR also compares the current
+3.11.10, not merely any semantic version. Before destructive restore, OSCAR also compares the current
 application, PostgreSQL, and gateway image names, immutable IDs, and required release labels with
 the authenticated inventory. Exact names, content-addressed IDs, and required labels are hard
 gates. Repository digests are recorded as registry provenance, but a difference is only warned
@@ -354,10 +356,10 @@ authenticated `CURRENT` pointer. This prevents inspection or restoration of an o
 point from mutating current journal eligibility or the committed local snapshot. `backup-prune` is
 retired and performs no deletion.
 Re-verification proves the authenticated snapshot has not changed; the quiesced archive/catalog
-reconciliation is a mandatory invariant of creating that authenticated 3.11.0 snapshot, not a
+reconciliation is a mandatory invariant of creating that authenticated 3.11.10 snapshot, not a
 comparison against the current live deployment.
 
-For a newly created 3.11.0 backup, successful verification proves authenticated structural integrity
+For a newly created 3.11.10 backup, successful verification proves authenticated structural integrity
 at that time and confirms the locally configured OSCAR/PostgreSQL utility images can read it; it
 does not by itself complete schema-v2 acceptance. A
 directory without `SHA256SUMS.hmac` is rejected rather than promoted into the verified retention
@@ -407,7 +409,7 @@ that payload because streamed `postgres/pg_wal` is sufficient. Before
 stopping or replacing anything,
 the command requires the same valid backup ID twice, authenticates/verifies the backup, validates the
 release-configuration archive, and proves that the current `.env`, backup epoch, and backed-up
-`.env.example` all identify exactly OSCAR 3.11.0. It also requires every exact image resolved by the
+`.env.example` all identify exactly OSCAR 3.11.10. It also requires every exact image resolved by the
 current Compose configuration to exist locally; restore never substitutes or pulls a different tag.
 
 A restore attempt does not change the recovery point's lifecycle state. An accepted recovery point
@@ -442,7 +444,7 @@ Windows:
 The restore workflow:
 
 1. verifies the backup again;
-2. validates exact 3.11.0 release identity and local image availability again after verification;
+2. validates exact 3.11.10 release identity and local image availability again after verification;
 3. decrypts the backed-up `.env`, `secrets/`, and `tls/` into a private staging directory, merges
    the target-local environment bindings, and validates the entire staged replacement set;
 4. for schema v1 only, authenticates its required legacy WAL payload but does not stage, merge, or
@@ -463,7 +465,10 @@ The restore workflow:
     post-promotion write across checkpoint and clean restart while `archive_mode` remains off;
 12. removes the persisted one-time recovery settings, restarts PostgreSQL while OSCAR remains
     stopped, and requires the recovery GUCs to return to defaults with no pending restart; and
-13. starts OSCAR/gateway and waits for complete Compose health: top-level auto-start modules must be
+13. starts OSCAR/gateway (and, whenever the snapshot contains `remote-access/octelium.env` +
+    `octelium-token.txt`, restores `${OSCAR_STORAGE_ROOT}/remote-access/` with owner-only `0700`/`0600`
+    permissions and invokes `oscar-remote-access sync` so the Octelium Zero Trust tunnel reconnects
+    automatically on replacement hardware) and waits for complete Compose health: top-level auto-start modules must be
     started and nested lane devices must have completed their startup attempts, rather than merely
     accepting HTTP availability. A device may settle offline without hiding its status UI.
 
@@ -520,7 +525,7 @@ restore, review container image provenance, endpoint identity, and TLS acceptanc
 - `image-inventory.txt` enforces exact OCI image `sha256` ID parity (`application_id`,
   `postgres_id`, and `gateway_id`) during `restore`. Load the exact `offline-images.tar` (or
   digest-pinned images) that produced the backup—or upgrade the source deployment to the target
-  host's exact 3.11.0 release bundle before taking the migration backup—so image IDs match bit-for-bit.
+  host's exact 3.11.10 release bundle before taking the migration backup—so image IDs match bit-for-bit.
 - Source TLS material (`tls/server.crt` and `tls/server.key`) and application credentials are
   restored, while the target `OSCAR_HOSTNAME`, `OSCAR_HTTPS_PORT`, and `OSCAR_TLS_SANS` bindings in
   `.env` remain authoritative. If the replacement host uses a new IP address or DNS name that is not
@@ -598,7 +603,7 @@ and approver.
 
 ## Recovery boundary: no PITR
 
-OSCAR 3.11.0 does not continuously archive PostgreSQL WAL and does not support point-in-time recovery.
+OSCAR 3.11.10 does not continuously archive PostgreSQL WAL and does not support point-in-time recovery.
 The supported target is the consistency endpoint inside one verified coordinated snapshot. Do not
 present a preserved legacy WAL root, a schema-v1 compatibility payload, or the Parquet cold tier as
 a current PITR chain.
@@ -613,7 +618,7 @@ snapshot. This order prevents a failed backup or crash from leaving zero authent
 
 `backup-prune` is retired. It remains accepted only to print retirement guidance and performs no
 deletion. `OSCAR_BACKUP_RETENTION_COUNT` and `OSCAR_BACKUP_AUTO_PRUNE` are ignored legacy settings
-and are not present in the 3.11.0 template. Never hand-edit `CURRENT` or delete a pointed-to snapshot.
+and are not present in the 3.11.10 template. Never hand-edit `CURRENT` or delete a pointed-to snapshot.
 
 Define a policy that retains enough **verified, off-host** snapshot copies to meet recovery
 objectives. Off-host media are outside the local one-snapshot state machine; copy the complete

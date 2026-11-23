@@ -10,14 +10,20 @@ if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or $PSVersionTa
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..'))
 $storageScript = Join-Path $repoRoot 'dist\release\oscar-storage.ps1'
+$usbBackupScript = Join-Path $repoRoot 'dist\release\oscar-usb-backup.ps1'
+$sandboxScript = Join-Path $repoRoot 'dist\release\oscar-sandbox.ps1'
+$updateScript = Join-Path $repoRoot 'dist\release\oscar-update.ps1'
+$remoteAccessScript = Join-Path $repoRoot 'dist\release\oscar-remote-access.ps1'
+$rpmProxyScript = Join-Path $repoRoot 'dist\release\oscar-rpm-proxy.ps1'
 $setupScript = Join-Path $repoRoot 'dist\release\oscar-setup.ps1'
 $hostPrepScript = Join-Path $repoRoot 'dist\release\configure-windows-host.ps1'
 $verifyScript = Join-Path $repoRoot 'dist\release\verify-bundle.ps1'
+$autoinstallUsbScript = Join-Path $repoRoot 'dist\release\ubuntu\create-autoinstall-usb.ps1'
 $offlineBuilderScript = Join-Path $repoRoot 'tools\offline\build-offline-bundle.ps1'
 $composeFile = Join-Path $repoRoot 'dist\release\compose.yaml'
 $oscarDockerfile = Join-Path $repoRoot 'dist\release\docker\oscar\Dockerfile'
 $oscarEntrypoint = Join-Path $repoRoot 'dist\release\docker\oscar\entrypoint.sh'
-$releasePowerShellScripts = @($storageScript, $setupScript, $hostPrepScript, $verifyScript, $offlineBuilderScript)
+$releasePowerShellScripts = @($storageScript, $usbBackupScript, $sandboxScript, $updateScript, $remoteAccessScript, $rpmProxyScript, $setupScript, $hostPrepScript, $verifyScript, $autoinstallUsbScript, $offlineBuilderScript)
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('oscar-storage-ps5-' + [Guid]::NewGuid().ToString('N'))
 $createdDockerGroup = $false
 
@@ -70,6 +76,80 @@ try {
         foreach ($script in $releasePowerShellScripts) {
             Assert-True (-not ([IO.File]::ReadAllText($script).Contains($forbidden))) "$script uses a .NET API absent from Windows PowerShell 5.1: $forbidden"
         }
+    }
+
+    # Verify Windows 11 Bare-Metal Autoinstall USB Builder renders LF UTF-8 user-data with USB-NVMe quirks
+    $sshPubFixture = Join-Path $temporaryRoot 'id_ed25519.pub'
+    [IO.File]::WriteAllText($sshPubFixture, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey fixture@oscar`r`n")
+    $renderedUserData = Join-Path $temporaryRoot 'rendered-user-data'
+    & (Join-Path $PSHOME 'powershell.exe') -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+        -File $autoinstallUsbScript `
+        -Hostname 'portal-node-07' `
+        -Username 'siteadmin' `
+        -SshKeyFile $sshPubFixture `
+        -RenderUserDataOnly $renderedUserData | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) 'create-autoinstall-usb.ps1 -RenderUserDataOnly exited non-zero.'
+    $renderedBytes = [IO.File]::ReadAllBytes($renderedUserData)
+    Assert-True (-not ($renderedBytes -contains [byte]13)) 'Rendered cloud-init user-data must use pure LF line endings (no CR).'
+    $renderedText = [IO.File]::ReadAllText($renderedUserData)
+    Assert-True ($renderedText.Contains('hostname: portal-node-07')) 'Rendered user-data did not apply custom hostname.'
+    Assert-True ($renderedText.Contains('username: siteadmin')) 'Rendered user-data did not apply custom username.'
+    Assert-True ($renderedText.Contains('siteadmin ALL=(ALL) NOPASSWD:ALL')) 'Rendered user-data did not update sudoers username.'
+    Assert-True ($renderedText.Contains('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey fixture@oscar')) 'Rendered user-data did not inject SSH authorized_keys.'
+    Assert-True ($renderedText.Contains('0bda:9210:u') -and $renderedText.Contains('0bda:9210:k')) 'Rendered user-data is missing USB-NVMe BOT + No-LPM quirks.'
+    Assert-True ($renderedText.Contains('/usr/local/bin/oscar-wizard')) 'Rendered user-data is missing first-boot oscar-wizard installer.'
+
+    $luksPassFixture = Join-Path $temporaryRoot 'luks-passphrase.txt'
+    $adminPassFixture = Join-Path $temporaryRoot 'admin-password.txt'
+    [IO.File]::WriteAllText($luksPassFixture, "StrongBareMetalLuks!2026`r`n")
+    [IO.File]::WriteAllText($adminPassFixture, "MyStrongPass!2026`r`n")
+    $hardenedUserData = Join-Path $temporaryRoot 'rendered-user-data-hardened'
+    & (Join-Path $PSHOME 'powershell.exe') -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+        -File $autoinstallUsbScript `
+        -Hostname 'portal-hardened-01' `
+        -Username 'siteadmin' `
+        -PasswordFile $adminPassFixture `
+        -LuksPassphraseFile $luksPassFixture `
+        -RequireSudoPassword `
+        -SshKeyFile $sshPubFixture `
+        -SshKeysOnly `
+        -RenderUserDataOnly $hardenedUserData | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) 'create-autoinstall-usb.ps1 hardened -RenderUserDataOnly exited non-zero.'
+    $hardenedText = [IO.File]::ReadAllText($hardenedUserData)
+    Assert-True (-not $hardenedText.Contains('NOPASSWD:ALL')) 'Hardened rendered user-data must omit NOPASSWD:ALL when -RequireSudoPassword is set.'
+    Assert-True ($hardenedText.Contains('allow-pw: false') -and $hardenedText.Contains('PasswordAuthentication no')) 'Hardened rendered user-data did not enforce SSH keys only.'
+    Assert-True ($hardenedText.Contains('"StrongBareMetalLuks!2026"')) 'Hardened rendered user-data did not inject LUKS2 full-disk encryption passphrase.'
+    Assert-True ($hardenedText -match 'password:\s*"\$6\$[./0-9A-Za-z]{16}\$[./0-9A-Za-z]{86}"') 'Hardened rendered user-data did not inject a valid SHA-512 ($6$) password hash from -PasswordFile.'
+
+    $resetCliRejectProcess = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', $setupScript, '-Command', 'reset-admin-password', '-Password', 'LeakedCliPassword!2026') -Wait -PassThru -WindowStyle Hidden
+    Assert-True ($resetCliRejectProcess.ExitCode -ne 0) 'oscar-setup.ps1 reset-admin-password accepted a plaintext -Password on the command line.'
+
+    # Regression gate: oscar-setup.ps1 must never reference undefined Get-EnvValue / Get-EnvironmentValue (use Get-ConfiguredEnvValue)
+    $setupRawText = [IO.File]::ReadAllText($setupScript)
+    Assert-True ($setupRawText -notmatch '\bGet-EnvValue\b' -and $setupRawText -notmatch '\bGet-EnvironmentValue\b') `
+        'oscar-setup.ps1 contains undefined Get-EnvValue or Get-EnvironmentValue call; use Get-ConfiguredEnvValue.'
+    $setupTokens = $null; $setupParseErrors = $null
+    $setupAst = [System.Management.Automation.Language.Parser]::ParseFile($setupScript, [ref]$setupTokens, [ref]$setupParseErrors)
+    Assert-True ($setupParseErrors.Count -eq 0) 'oscar-setup.ps1 failed PowerShell AST syntax parsing.'
+    $setupFunctions = @{}
+    foreach ($fnAst in $setupAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+        $setupFunctions[$fnAst.Name] = $true
+    }
+    Assert-True ($setupFunctions.ContainsKey('Get-ConfiguredEnvValue')) 'oscar-setup.ps1 is missing Get-ConfiguredEnvValue.'
+
+    # Verify oscar-rpm-proxy.ps1 status exits 0 cleanly when unconfigured
+    $rpmStatusDir = Join-Path $temporaryRoot 'rpm-proxy-unconfigured'
+    $prevRpmStateDir = $env:OSCAR_RPM_PROXY_STATE_DIR
+    try {
+        $env:OSCAR_RPM_PROXY_STATE_DIR = $rpmStatusDir
+        $rpmStatusProcess = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList @(
+            '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+            '-File', $rpmProxyScript, 'status') -Wait -PassThru -WindowStyle Hidden
+        Assert-True ($rpmStatusProcess.ExitCode -eq 0) 'oscar-rpm-proxy.ps1 status failed when unconfigured.'
+    } finally {
+        $env:OSCAR_RPM_PROXY_STATE_DIR = $prevRpmStateDir
     }
 
     . $setupScript -Command help -TlsSan @('192.168.0.61,oscar-site.example-tailnet.ts.net', '192.168.0.61') -NoAutoNetworkSans | Out-Null
@@ -1240,16 +1320,30 @@ SELECT 'single quote '' and $dollar';
     Assert-True $rejectedOversized 'PowerShell accepted an archive-generation inventory above 37,000,000 bytes.'
 
     . $setupScript -Command help | Out-Null
-    $setupStopOrder = & {
-        $captured = New-Object System.Collections.Generic.List[string]
-        function Invoke-Compose([string[]]$Arguments) {
-            [void]$captured.Add([string]::Join(' ', $Arguments))
+    $tunnelSentinelDir = Join-Path $temporaryRoot 'tunnel-sentinel-bin'
+    $tunnelSentinelLog = Join-Path $temporaryRoot 'tunnel-docker-invoked.log'
+    New-Item -ItemType Directory -Path $tunnelSentinelDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $tunnelSentinelDir 'docker.cmd') -Encoding ASCII -Value "@echo invoked %*>>`"$tunnelSentinelLog`"`r`n@exit /b 99`r`n"
+    $savedPath = $env:PATH
+    try {
+        $env:PATH = "$tunnelSentinelDir;$savedPath"
+        $setupStopOrder = & {
+            $captured = New-Object System.Collections.Generic.List[string]
+            function Invoke-Compose([string[]]$Arguments) {
+                [void]$captured.Add([string]::Join(' ', $Arguments))
+            }
+            Stop-DeploymentOrdered
+            [string]::Join(';', $captured)
         }
-        Stop-DeploymentOrdered
-        [string]::Join(';', $captured)
+        Assert-True ($setupStopOrder -ceq 'stop gateway;stop oscar;stop postgres') `
+            'Windows setup stop/restart is not dependency ordered.'
+        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path (Split-Path -Parent $setupScript) 'oscar-remote-access.ps1') stop-if-enabled
+        Assert-True ($LASTEXITCODE -eq 0) 'oscar-remote-access.ps1 stop-if-enabled failed under OSCAR_STORAGE_TEST_MODE=1.'
+        Assert-True (-not (Test-Path -LiteralPath $tunnelSentinelLog)) `
+            'Setup/remote-access test mode leaked a real docker invocation (risk of stopping live oscar-tunnel-1).'
+    } finally {
+        $env:PATH = $savedPath
     }
-    Assert-True ($setupStopOrder -ceq 'stop gateway;stop oscar;stop postgres') `
-        'Windows setup stop/restart is not dependency ordered.'
     Assert-True (-not (Test-FullyQualifiedDeploymentPath '\\server\share\archive')) 'Setup accepted a UNC storage root.'
 
     $wslCandidates = Join-Path $temporaryRoot 'wsl-candidates'
@@ -1585,6 +1679,21 @@ public static class OscarLongPathTestHelper {
         & cmd.exe /c "rmdir `"$junctionLink`"" *> $null
         Remove-DirectoryTreeLongPathSafe $junctionParent 'reparse guard fixture'
     }
+
+    # Verify Autoinstall USB Creator PBKDF2 web admin password hashing & user-data rendering under PS 5.1
+    $pbkdf2TestPw = 'TurnkeyPortal!2026#Admin'
+    $pbkdf2Out = (& (Join-Path $PSHOME 'powershell.exe') -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+        -File $autoinstallUsbScript -TestOscarPbkdf2Only $pbkdf2TestPw | Select-Object -First 1).Trim()
+    Assert-True ($pbkdf2Out.StartsWith('# PBKDF2_PREENCODED:PBKDF2WithHmacSHA1:16:')) "Unexpected PBKDF2 output: $pbkdf2Out"
+    Assert-True (-not $pbkdf2Out.Contains($pbkdf2TestPw)) 'Plaintext OSCAR web admin password leaked into PBKDF2 output.'
+    $pbkdf2Parts = $pbkdf2Out -split ':'
+    Assert-True ($pbkdf2Parts.Count -eq 5) "Expected 5 colon-separated PBKDF2 segments, got $($pbkdf2Parts.Count)."
+    $saltBytes = [Convert]::FromBase64String($pbkdf2Parts[3])
+    $dkBytes = [Convert]::FromBase64String($pbkdf2Parts[4])
+    $verifyKdf = New-Object System.Security.Cryptography.Rfc2898DeriveBytes([byte[]]([Text.Encoding]::UTF8.GetBytes($pbkdf2TestPw)), $saltBytes, 65536)
+    $expectedDk = [Convert]::ToBase64String($verifyKdf.GetBytes(16))
+    $verifyKdf.Dispose()
+    Assert-True ($pbkdf2Parts[4] -ceq $expectedDk) 'PowerShell 5.1 PBKDF2 derived key did not match expected RFC2898 SHA1 key.'
 
     Write-Host 'OSCAR Windows PowerShell 5.1 storage safety tests passed.' -ForegroundColor Green
 } finally {

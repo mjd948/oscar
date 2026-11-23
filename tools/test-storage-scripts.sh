@@ -557,6 +557,27 @@ assert_not_contains '^[[:space:]]*compose stop([[:space:]]*$)' "$setup_shell_scr
 assert_not_contains "Invoke-Compose @\('restart'" "$setup_powershell_script"
 assert_not_contains "Invoke-Compose @\('stop', 'gateway', 'oscar', 'postgres'\)" "$powershell_script"
 
+# Guard against test-mode or unconfigured invocations ever calling real `docker stop oscar-tunnel-1` on a host daemon.
+tunnel_sentinel_bin="$test_root/tunnel-sentinel-bin"
+tunnel_sentinel_log="$test_root/tunnel-sentinel-docker.log"
+mkdir -p "$tunnel_sentinel_bin"
+cat >"$tunnel_sentinel_bin/docker" <<EOF
+#!/usr/bin/env bash
+printf 'invoked %s\n' "\$*" >>"$tunnel_sentinel_log"
+exit 99
+EOF
+chmod +x "$tunnel_sentinel_bin/docker"
+PATH="$tunnel_sentinel_bin:$PATH" OSCAR_STORAGE_TEST_MODE=1 bash "$repo_root/dist/release/oscar-remote-access.sh" stop-if-enabled
+PATH="$tunnel_sentinel_bin:$PATH" OSCAR_STORAGE_TEST_MODE=1 bash "$repo_root/dist/release/oscar-remote-access.sh" sync
+unconfigured_ra_dir="$test_root/unconfigured-release"
+mkdir -p "$unconfigured_ra_dir"
+cp "$repo_root/dist/release/oscar-remote-access.sh" "$repo_root/dist/release/.env.example" "$unconfigured_ra_dir/"
+PATH="$tunnel_sentinel_bin:$PATH" bash "$unconfigured_ra_dir/oscar-remote-access.sh" stop-if-enabled
+[[ ! -e $tunnel_sentinel_log ]] || {
+    printf 'Remote-access test mode or unconfigured stop-if-enabled leaked a docker call: %s\n' "$(cat "$tunnel_sentinel_log")" >&2
+    exit 1
+}
+
 # The release directory is part of every destructive containment decision.
 # Resolve directory aliases physically and reject a launcher-file alias before
 # reading deployment configuration.
@@ -1206,7 +1227,7 @@ postgres_id=sha256:ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 postgres_repo_digests=null
 postgres_version_label=$inventory_version
 postgres_storage_profile_label=$inventory_version
-gateway_name=nginxinc/nginx-unprivileged:1.28.1-alpine
+gateway_name=nginx/nginx-unprivileged:1.30.7-alpine
 gateway_id=sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 gateway_repo_digests=null
 created_at=2026-10-17T12:00:00Z
@@ -1215,12 +1236,12 @@ if bash -c '
     storage_script=$1; fixture=$2; version=$3
     set -- help
     source "$storage_script" >/dev/null
-    resolve_release_images() { printf "%s\n%s\n%s\n" "oscar:$version" "oscar-postgis:$version" "nginxinc/nginx-unprivileged:1.28.1-alpine"; }
+    resolve_release_images() { printf "%s\n%s\n%s\n" "oscar:$version" "oscar-postgis:$version" "nginx/nginx-unprivileged:1.30.7-alpine"; }
     image_inspect_value() {
         case "$1|$2" in
             "oscar:$version|{{.Id}}") printf "sha256:%064d" 0 | tr 0 b ;;
             "oscar-postgis:$version|{{.Id}}") printf "sha256:%064d" 0 | tr 0 c ;;
-            "nginxinc/nginx-unprivileged:1.28.1-alpine|{{.Id}}") printf "sha256:%064d" 0 | tr 0 d ;;
+            "nginx/nginx-unprivileged:1.30.7-alpine|{{.Id}}") printf "sha256:%064d" 0 | tr 0 d ;;
             *"|{{json .RepoDigests}}") printf null ;;
             *"org.opencontainers.image.version"*) printf "%s" "$version" ;;
             *"com.botts.oscar.storage-profile"*) printf "%s" "$version" ;;
@@ -1251,21 +1272,21 @@ postgres_id=sha256:ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 postgres_repo_digests=["oscar-postgis@sha256:2222222222222222222222222222222222222222222222222222222222222222"]
 postgres_version_label=$inventory_version
 postgres_storage_profile_label=$inventory_version
-gateway_name=nginxinc/nginx-unprivileged:1.28.1-alpine
+gateway_name=nginx/nginx-unprivileged:1.30.7-alpine
 gateway_id=sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-gateway_repo_digests=["nginxinc/nginx-unprivileged@sha256:3333333333333333333333333333333333333333333333333333333333333333"]
+gateway_repo_digests=["nginx/nginx-unprivileged@sha256:3333333333333333333333333333333333333333333333333333333333333333"]
 created_at=2026-10-17T12:00:00Z
 EOF
 bash -c '
     storage_script=$1; fixture=$2; version=$3
     set -- help
     source "$storage_script" >/dev/null
-    resolve_release_images() { printf "%s\n%s\n%s\n" "oscar:$version" "oscar-postgis:$version" "nginxinc/nginx-unprivileged:1.28.1-alpine"; }
+    resolve_release_images() { printf "%s\n%s\n%s\n" "oscar:$version" "oscar-postgis:$version" "nginx/nginx-unprivileged:1.30.7-alpine"; }
     image_inspect_value() {
         case "$1|$2" in
             "oscar:$version|{{.Id}}") printf "sha256:%064d" 0 | tr 0 a ;;
             "oscar-postgis:$version|{{.Id}}") printf "sha256:%064d" 0 | tr 0 c ;;
-            "nginxinc/nginx-unprivileged:1.28.1-alpine|{{.Id}}") printf "sha256:%064d" 0 | tr 0 d ;;
+            "nginx/nginx-unprivileged:1.30.7-alpine|{{.Id}}") printf "sha256:%064d" 0 | tr 0 d ;;
             *"|{{json .RepoDigests}}") printf null ;;
             *"org.opencontainers.image.version"*) printf "%s" "$version" ;;
             *"com.botts.oscar.storage-profile"*) printf "%s" "$version" ;;
@@ -1914,6 +1935,24 @@ release_config_files=(
 )
 tar -C "$repo_root/dist/release" -czf "$test_root/release-config-good.tar.gz" "${release_config_files[@]}"
 sh "$archive_validator" release-config "$test_root/release-config-good.tar.gz"
+
+mkdir -p "$test_root/secrets-with-ra/secrets" "$test_root/secrets-with-ra/tls" "$test_root/secrets-with-ra/remote-access"
+for secret_rel in .env secrets/backup-key.txt secrets/oscar-admin-password.txt secrets/oscar-db-password.txt secrets/postgres-bootstrap-password.txt tls/server.crt tls/server.key remote-access/octelium.env remote-access/octelium-token.txt; do
+    printf 'fixture\n' >"$test_root/secrets-with-ra/$secret_rel"
+done
+tar -C "$test_root/secrets-with-ra" --no-recursion -czf "$test_root/secrets-with-ra.tar.gz" \
+    .env secrets secrets/backup-key.txt secrets/oscar-admin-password.txt secrets/oscar-db-password.txt secrets/postgres-bootstrap-password.txt \
+    tls tls/server.crt tls/server.key remote-access remote-access/octelium.env remote-access/octelium-token.txt
+sh "$archive_validator" deployment-secrets "$test_root/secrets-with-ra.tar.gz"
+
+rm -f "$test_root/secrets-with-ra/remote-access/octelium.env"
+tar -C "$test_root/secrets-with-ra" --no-recursion -czf "$test_root/secrets-missing-octelium-env.tar.gz" \
+    .env secrets secrets/backup-key.txt secrets/oscar-admin-password.txt secrets/oscar-db-password.txt secrets/postgres-bootstrap-password.txt \
+    tls tls/server.crt tls/server.key remote-access remote-access/octelium-token.txt
+if sh "$archive_validator" deployment-secrets "$test_root/secrets-missing-octelium-env.tar.gz" >/dev/null 2>&1; then
+    printf 'Deployment-secrets validator accepted remote-access without octelium.env.\n' >&2
+    exit 1
+fi
 
 mkdir -p "$test_root/release-config-fixture/postgis/pgdata"
 for relative in "${release_config_files[@]}"; do
@@ -3203,7 +3242,7 @@ if command -v pwsh >/dev/null 2>&1; then
                 return [pscustomobject]@{
                     application = "oscar:$RequiredReleaseVersion"
                     postgres = "oscar-postgis:$RequiredReleaseVersion"
-                    gateway = "nginxinc/nginx-unprivileged:1.28.1-alpine"
+                    gateway = "nginx/nginx-unprivileged:1.30.7-alpine"
                 }
             }
             function Get-ImageInspectValue([string]$Image, [string]$Field) {
@@ -3222,7 +3261,7 @@ if command -v pwsh >/dev/null 2>&1; then
                     switch -CaseSensitive ($Image) {
                         "oscar:$RequiredReleaseVersion" { return "sha256:" + ("a" * 64) }
                         "oscar-postgis:$RequiredReleaseVersion" { return "sha256:" + ("c" * 64) }
-                        "nginxinc/nginx-unprivileged:1.28.1-alpine" { return "sha256:" + ("d" * 64) }
+                        "nginx/nginx-unprivileged:1.30.7-alpine" { return "sha256:" + ("d" * 64) }
                     }
                 }
                 if ($Field -ceq "RepoDigests") { return "null" }
@@ -4584,6 +4623,61 @@ ps_accept=$(grep -n -m1 'Complete-NewBackupAcceptance' <<<"$ps_create_body" | cu
    $ps_checksums -lt $ps_publish && $ps_publish -lt $ps_accept &&
    $ps_accept_verify -lt $ps_accept_confirm && $ps_accept_confirm -lt $ps_accept_receipt ]] || {
     printf 'PowerShell backup does not verify the authenticated published core before live journal confirmation.\n' >&2
+    exit 1
+}
+
+# Verify bare-metal autoinstall security hardening flags & break-glass CLI password-argv guard
+autoinstall_sh="$repo_root/dist/release/ubuntu/create-autoinstall-usb.sh"
+setup_sh="$repo_root/dist/release/oscar-setup.sh"
+printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey fixture@oscar\n' >"$test_root/test_ed25519.pub"
+printf 'StrongBareMetalLuks!2026\n' >"$test_root/test_luks.txt"
+bash "$autoinstall_sh" \
+    --hostname portal-hardened-01 \
+    --username siteadmin \
+    --luks-passphrase-file "$test_root/test_luks.txt" \
+    --require-sudo-password \
+    --ssh-key-file "$test_root/test_ed25519.pub" \
+    --ssh-keys-only \
+    --render-user-data-only "$test_root/hardened-user-data"
+! grep -Fq 'NOPASSWD:ALL' "$test_root/hardened-user-data" || {
+    printf 'create-autoinstall-usb.sh retained NOPASSWD:ALL despite --require-sudo-password.\n' >&2
+    exit 1
+}
+grep -Fq 'allow-pw: false' "$test_root/hardened-user-data" &&
+grep -Fq 'PasswordAuthentication no' "$test_root/hardened-user-data" &&
+grep -Fq '"StrongBareMetalLuks!2026"' "$test_root/hardened-user-data" || {
+    printf 'create-autoinstall-usb.sh did not apply SSH key-only or LUKS2 settings.\n' >&2
+    exit 1
+}
+if bash "$setup_sh" reset-admin-password --password 'LeakedCliPassword!2026' >/dev/null 2>&1; then
+    printf 'oscar-setup.sh reset-admin-password accepted --password on argv.\n' >&2
+    exit 1
+fi
+
+# Verify oscar-rpm-proxy.sh configure --from-csv, validate, and unconfigured/configured status
+rpm_proxy_sh="$repo_root/dist/release/oscar-rpm-proxy.sh"
+rpm_proxy_state="$test_root/rpm-proxy-state"
+OSCAR_RPM_PROXY_STATE_DIR="$rpm_proxy_state" bash "$rpm_proxy_sh" status | grep -Fq 'disabled (not configured)' || {
+    printf 'oscar-rpm-proxy.sh status did not report disabled when unconfigured.\n' >&2
+    exit 1
+}
+cat >"$test_root/sample-lanes.csv" <<'EOF'
+Name,UniqueID,AutoStart,Latitude,Longitude,OperationalViews,RPMConfigType,RPMHost,RPMPort,AspectAddressStart,AspectAddressEnd,EMLEnabled,EMLCollimated,LaneWidth,CameraType0,CameraHost0,CameraPath0,Codec0,Username0,Password0
+North Gate 1,lane-01,true,35.9311,-84.3100,Cargo,Rapiscan,198.51.100.11,1600,,,false,false,4.0,FFMPEG,198.51.100.21,/1,H264,,
+North Gate 2,lane-02,true,35.9312,-84.3101,Cargo,Rapiscan,198.51.100.12,1600,,,false,false,4.0,FFMPEG,198.51.100.22,/1,H264,,
+EOF
+OSCAR_RPM_PROXY_STATE_DIR="$rpm_proxy_state" bash "$rpm_proxy_sh" configure \
+    --from-csv "$test_root/sample-lanes.csv" \
+    --mode port-map \
+    --base-port 11601 \
+    --emit-oscar-csv "$test_root/proxied-lanes.csv" >/dev/null
+OSCAR_RPM_PROXY_STATE_DIR="$rpm_proxy_state" bash "$rpm_proxy_sh" validate | grep -Fq 'configuration valid: 2 enabled service(s)' || {
+    printf 'oscar-rpm-proxy.sh validate did not confirm 2 enabled services.\n' >&2
+    exit 1
+}
+grep -Fq '127.0.0.1,11601' "$test_root/proxied-lanes.csv" &&
+grep -Fq '127.0.0.1,11602' "$test_root/proxied-lanes.csv" || {
+    printf 'oscar-rpm-proxy.sh configure did not emit 20-column proxied OSCAR CSV.\n' >&2
     exit 1
 }
 

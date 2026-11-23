@@ -61,14 +61,14 @@ run_menu_command() {
     local command_name=${1:-}
     shift || true
     case "$command_name" in
-        init|verify|start|stop|restart|upgrade|backup|backup-verify|backup-prune|restore|archive|support-bundle)
+        init|verify|start|stop|restart|upgrade|update|self-update|refresh-tls|reset-admin-password|prepare-host|stage-site-network|apply-site-network|rollback-network|discover-devices|backup|backup-verify|backup-prune|restore|archive|usb-backup|continual-backup|sandbox|training-sandbox|support-bundle|remote-access|rpm-proxy|wizard|firstboot-wizard|create-autoinstall-usb)
             if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
                 bash "$setup_script" "$command_name" "$@"
             else
                 sudo bash "$setup_script" "$command_name" "$@"
             fi
             ;;
-        check|status|logs|help)
+        check|host-check|identify-nics|status|logs|help)
             bash "$setup_script" "$command_name" "$@"
             ;;
         exit|quit) return 2 ;;
@@ -86,9 +86,19 @@ OSCAR Administration
 ====================
 
 Enter a command and any options. Examples:
+  wizard
+  create-autoinstall-usb
+  host-check
+  prepare-host --expand-lvm --configure-ufw
+  identify-nics --watch
+  stage-site-network
+  apply-site-network
+  discover-devices --interface enp2s0
   init
   init --hostname oscar.local --port 443
   init --hostname oscar.local --tls-san oscar-site.example.org
+  refresh-tls
+  reset-admin-password
   start
   stop
   restart
@@ -99,9 +109,26 @@ Enter a command and any options. Examples:
   check
   verify
   upgrade
+  update check
+  update apply
   backup
   backup-verify BACKUP_ID
   restore --backup BACKUP_ID --confirm BACKUP_ID
+  usb-backup list-drives
+  usb-backup prepare-drive --device /dev/sdX --mode continual --confirm FORMAT
+  usb-backup mode continual
+  usb-backup mode occasional
+  usb-backup sync
+  usb-backup eject
+  usb-backup attach
+  usb-backup status
+  usb-backup restore --from /srv/oscar-usb-backup --backup-key FILE --confirm RESTORE
+  sandbox start
+  sandbox status
+  sandbox stop
+  rpm-proxy configure --from-csv lanes.csv --mode port-map --start
+  rpm-proxy status
+  rpm-proxy stop
   archive status
   archive verify
   archive hold list

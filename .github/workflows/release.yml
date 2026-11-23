@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 env:
-  RELEASE_VERSION: '3.11.0'
+  RELEASE_VERSION: '3.11.10'
   JAVA_VERSION: '21'
   NODE_VERSION: '22'
   OSCAR_DIR: 'web/oscar-viewer'
@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
 
@@ -84,6 +84,14 @@ jobs:
       - name: Prove adopted Compose volumes are preserved
         run: ./tools/test-compose-volume-preservation.sh
 
+      - name: Verify real-time 50-lane Rapiscan RPM Edge Proxy fan-out and disconnect gating
+        run: python3 ./tools/test-rpm-proxy.py
+
+      - name: Verify zero-login GitHub System Update agent and fail-safe rollback
+        run: |
+          ./tools/test-system-update.sh
+          ./tools/test-autoinstall-usb-creator.sh
+
   tiered-storage-postgres:
     name: Tiered Storage / PostgreSQL
     needs: validate
@@ -106,12 +114,12 @@ jobs:
           --health-retries 12
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
 
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: 'zulu'
@@ -163,7 +171,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: false
 
@@ -180,7 +188,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: false
 
@@ -221,7 +229,7 @@ jobs:
           df -h
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           submodules: recursive
@@ -251,13 +259,13 @@ jobs:
           cat "$notes_file"
 
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: 'zulu'
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -272,7 +280,7 @@ jobs:
           echo "arch=${arch}" >> "$GITHUB_OUTPUT"
 
       - name: Cache PDF documentation APT packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/pdf-apt-debs
           key: pdf-apt-debs-v1-${{ steps.pdf-apt-key.outputs.codename }}-${{ steps.pdf-apt-key.outputs.arch }}-${{ hashFiles('.github/workflows/release.yml', 'tools/documentation/build-operator-manual-pdfs.sh') }}
@@ -321,9 +329,9 @@ jobs:
           # interrupted mid-unpack, failing over across official GPG-verified Ubuntu mirrors.
           downloaded=false
           for mirror in \
-            "https://mirrors.edge.kernel.org/ubuntu" \
             "http://archive.ubuntu.com/ubuntu" \
-            "http://us.archive.ubuntu.com/ubuntu"
+            "http://us.archive.ubuntu.com/ubuntu" \
+            "https://mirrors.edge.kernel.org/ubuntu"
           do
             echo "Staging PDF documentation packages via ${mirror}..."
             if [ -f /etc/apt/apt-mirrors.txt ]; then
@@ -413,10 +421,27 @@ jobs:
             documentation/ARCHIVE_FORMAT.md \
             documentation/BACKUP_RESTORE.md \
             documentation/STORAGE_OPERATIONS.md \
+            documentation/UBUNTU_FIELD_SETUP_GUIDE.md \
+            documentation/CONTINUAL_AND_USB_BACKUP_GUIDE.md \
+            documentation/PLUGGABLE_EXTENSIONS_GUIDE.md \
+            documentation/TRAINING_SANDBOX_GUIDE.md \
+            documentation/RPM_EDGE_PROXY_GUIDE.md \
             documentation/daily-file-journal-v1.md \
             documentation/retained-media-v1.md \
+            compose.rpm-proxy.yaml \
+            compose.sandbox.yaml \
+            oscar-rpm-proxy.sh \
+            oscar-rpm-proxy.ps1 \
+            oscar-sandbox.sh \
+            oscar-sandbox.ps1 \
+            oscar-update.sh \
+            oscar-update.ps1 \
             oscar-storage.sh \
             oscar-storage.ps1 \
+            oscar-usb-backup.sh \
+            oscar-usb-backup.ps1 \
+            oscar-usb-backup-engine.sh \
+            configure-ubuntu-host.sh \
             configure-windows-host.ps1 \
             validate-storage-archive.sh \
             docker/oscar/archive-object-helper.sh \
@@ -459,6 +484,15 @@ jobs:
             -BundleProfile Both `
             -SkipConnectedBuild `
             -CreateArchive
+
+      - name: Build Ubuntu 24.04 offline release artifact
+        shell: bash
+        run: |
+          ./tools/offline/build-ubuntu-offline-bundle.sh \
+            --skip-connected-build \
+            --use-existing-expanded-release \
+            --skip-image-export \
+            --create-archive
 
       - name: Validate offline release artifacts
         shell: bash
@@ -522,13 +556,28 @@ jobs:
               DEPLOYMENT.md
               QUICKSTART.md
               SHA256SUMS
+              compose.octelium.yaml
+              compose.rpm-proxy.yaml
+              compose.sandbox.yaml
               compose.yaml
+              configure-ubuntu-host.sh
               configure-windows-host.ps1
               offline-images.tar
+              oscar-remote-access.ps1
+              oscar-remote-access.sh
+              oscar-rpm-proxy.ps1
+              oscar-rpm-proxy.sh
+              oscar-sandbox.ps1
+              oscar-sandbox.sh
+              oscar-update.ps1
+              oscar-update.sh
               oscar-setup.ps1
               oscar-setup.sh
               oscar-storage.ps1
               oscar-storage.sh
+              oscar-usb-backup-engine.sh
+              oscar-usb-backup.ps1
+              oscar-usb-backup.sh
               oscar.bat
               oscar.sh
               validate-storage-archive.sh
@@ -546,6 +595,11 @@ jobs:
               documentation/ARCHIVE_FORMAT.md
               documentation/BACKUP_RESTORE.md
               documentation/STORAGE_OPERATIONS.md
+              documentation/UBUNTU_FIELD_SETUP_GUIDE.md
+              documentation/CONTINUAL_AND_USB_BACKUP_GUIDE.md
+              documentation/PLUGGABLE_EXTENSIONS_GUIDE.md
+              documentation/TRAINING_SANDBOX_GUIDE.md
+              documentation/RPM_EDGE_PROXY_GUIDE.md
               documentation/daily-file-journal-v1.md
               documentation/retained-media-v1.md
               documentation/operator-manual/README.md
@@ -561,12 +615,19 @@ jobs:
               docker/oscar/atomic-publish.c
               docker/oscar/Dockerfile
               docker/oscar/entrypoint.sh
+              docker/rpm-proxy/Dockerfile
+              docker/tunnel/Dockerfile
+              docker/tunnel/entrypoint.sh
               postgis/Dockerfile
               postgis/archive-wal.sh
               postgis/merge-wal-restore.sh
               postgis/prepare-restore.sh
               postgis/init-app-role.sh
               postgis/init-extensions.sql
+              ubuntu/create-autoinstall-usb.bat
+              ubuntu/create-autoinstall-usb.sh
+              ubuntu/create-autoinstall-usb.ps1
+              ubuntu/oscar-firstboot-wizard.sh
             )
             for expected in "${required_files[@]}"; do
               [ "$(grep -Fxc "${archive_root}/${expected}" "$listing")" -eq 1 ] || fail "Offline $profile bundle must contain exactly one $expected at its package root"
@@ -595,18 +656,34 @@ jobs:
                 DEPLOYMENT.md \
                 QUICKSTART.md \
                 SHA256SUMS \
+                compose.octelium.yaml \
+                compose.rpm-proxy.yaml \
+                compose.sandbox.yaml \
                 compose.yaml \
+                configure-ubuntu-host.sh \
                 configure-windows-host.ps1 \
                 docker \
                 documentation \
                 offline-images.tar \
+                oscar-remote-access.ps1 \
+                oscar-remote-access.sh \
+                oscar-rpm-proxy.ps1 \
+                oscar-rpm-proxy.sh \
+                oscar-sandbox.ps1 \
+                oscar-sandbox.sh \
+                oscar-update.ps1 \
+                oscar-update.sh \
                 oscar-setup.ps1 \
                 oscar-setup.sh \
                 oscar-storage.ps1 \
                 oscar-storage.sh \
+                oscar-usb-backup-engine.sh \
+                oscar-usb-backup.ps1 \
+                oscar-usb-backup.sh \
                 oscar.bat \
                 oscar.sh \
                 postgis \
+                ubuntu \
                 validate-storage-archive.sh \
                 verify-bundle.ps1 \
                 verify-bundle.sh
@@ -620,7 +697,7 @@ jobs:
             for expected in "${required_files[@]}"; do
               [ -s "$package_root/$expected" ] || fail "Offline $profile bundle has a missing or empty core file: $expected"
             done
-            for expected_directory in docker documentation postgis; do
+            for expected_directory in docker documentation postgis ubuntu; do
               [ -d "$package_root/$expected_directory" ] || fail "Offline $profile bundle is missing directory: $expected_directory"
             done
             [ ! -e "$package_root/osh-node-oscar" ] || fail "Offline $profile bundle unexpectedly retained osh-node-oscar"
@@ -643,7 +720,8 @@ jobs:
               const expected = [
                 `oscar:${version}`,
                 `oscar-postgis:${version}`,
-                "nginxinc/nginx-unprivileged:1.28.1-alpine",
+                `oscar-rpm-proxy:${version}`,
+                "nginx/nginx-unprivileged:1.30.7-alpine",
               ].sort();
               if (JSON.stringify(actual) !== JSON.stringify(expected)) {
                 throw new Error(`expected image tags ${expected.join(", ")}; received ${actual.join(", ")}`);
@@ -694,17 +772,49 @@ jobs:
             rm -rf "$expanded"
           done
 
+          # Validate Ubuntu 24.04 full offline archive
+          ubuntu_root="oscar-${version}-ubuntu-x86_64-offline-full"
+          ubuntu_archive="build/offline/${ubuntu_root}.zip"
+          ubuntu_checksum="${ubuntu_archive}.sha256"
+          ubuntu_expanded="$RUNNER_TEMP/offline-ubuntu-release-expanded"
+          ubuntu_package_root="${ubuntu_expanded}/${ubuntu_root}"
+
+          test -s "$ubuntu_archive" || fail "Ubuntu offline archive is missing or empty: $ubuntu_archive"
+          test -s "$ubuntu_checksum" || fail "Ubuntu offline archive checksum is missing or empty: $ubuntu_checksum"
+          if [ "$(stat -c '%s' "$ubuntu_archive")" -ge 2147483648 ]; then
+            fail "Ubuntu release asset exceeds GitHub's 2 GiB per-file limit: $ubuntu_archive"
+          fi
+          (cd "$(dirname "$ubuntu_archive")" && sha256sum --check --strict "$(basename "$ubuntu_checksum")")
+
+          rm -rf "$ubuntu_expanded"
+          mkdir -p "$ubuntu_expanded"
+          unzip -q "$ubuntu_archive" -d "$ubuntu_expanded"
+          [ -d "$ubuntu_package_root" ] || fail "Ubuntu offline package root is not a directory: $ubuntu_package_root"
+          [ -s "$ubuntu_package_root/installers/components.ubuntu-24.04-x86_64.json" ] || fail "Ubuntu offline bundle missing components.ubuntu-24.04-x86_64.json"
+          while IFS=$'\t' read -r component_file component_hash; do
+            component_path="$ubuntu_package_root/$component_file"
+            [ -s "$component_path" ] || fail "Ubuntu offline bundle missing .deb payload: $component_file"
+            [ "$(sha256sum "$component_path" | awk '{print $1}')" = "$component_hash" ] || fail "Ubuntu offline .deb checksum failed: $component_file"
+          done < <(node -e 'const m = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); for (const c of m.components) console.log(`${c.file}\t${c.sha256}`);' "$ubuntu_package_root/installers/components.ubuntu-24.04-x86_64.json")
+
+          node tools/validate-packaged-release.js --offline --expected-version="$RELEASE_VERSION" "$ubuntu_package_root"
+          bash "$ubuntu_package_root/verify-bundle.sh"
+          [ -s "$ubuntu_package_root/.bundle-verified" ] || fail "Ubuntu offline bundled verifier did not create its verification receipt"
+          rm -rf "$ubuntu_expanded"
+
           rm -rf \
             build/offline/.cache \
+            build/offline/oscar-*-ubuntu-x86_64-offline-full \
             build/offline/oscar-*-windows-x86_64-offline-full \
             build/offline/oscar-*-windows-x86_64-offline-images
 
       - name: Boot packaged deployment and run Playwright + ConSys + backup regression checks
         run: ./tools/test-live-deployment-regression.sh "${GITHUB_REF_NAME#v}" "${DIST_DIR}/oscar-${GITHUB_REF_NAME#v}.zip"
 
-      - name: Stage source archive and generate release checksums
+      - name: Stage source archive, standalone Autoinstall USB Creator, and generate release checksums
         run: |
           cp "${{ steps.source.outputs.archive }}" "${DIST_DIR}/"
+          ./tools/package-autoinstall-usb-creator.sh "${RELEASE_VERSION}" "${DIST_DIR}"
           (
             cd "${DIST_DIR}"
             for archive in oscar-*.zip; do
@@ -714,12 +824,12 @@ jobs:
           {
             (cd "${DIST_DIR}" && sha256sum --binary oscar-*.zip)
             (cd "${DOCS_DIR}" && sha256sum --binary OSCAR-*-Administrator-Operator-Manual-*.pdf)
-            (cd build/offline && sha256sum --binary oscar-*-windows-x86_64-offline-*.zip)
+            (cd build/offline && sha256sum --binary oscar-*-offline-*.zip)
           } > "${DIST_DIR}/OSCAR-${RELEASE_VERSION}-SHA256SUMS.txt"
           cat "${DIST_DIR}/OSCAR-${RELEASE_VERSION}-SHA256SUMS.txt"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }} (Amber)
@@ -732,5 +842,5 @@ jobs:
             ${{ env.DIST_DIR }}/oscar-*.zip.sha256
             ${{ env.DIST_DIR }}/OSCAR-*-SHA256SUMS.txt
             ${{ env.DOCS_DIR }}/OSCAR-*-Administrator-Operator-Manual-*.pdf
-            build/offline/oscar-*-windows-x86_64-offline-*.zip
-            build/offline/oscar-*-windows-x86_64-offline-*.zip.sha256
+            build/offline/oscar-*-offline-*.zip
+            build/offline/oscar-*-offline-*.zip.sha256

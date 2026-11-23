@@ -195,3 +195,40 @@ Verified on the scratch stack: `check-custom-pages.mjs` and `check-column-prefs.
 (ORNL dashboard untouched; both templates render every widget; persistence across reload; two maps
 on a page; video plays and charts draw for the page lane; no page errors).
 
+
+## ORNL 3.11.1 → 3.11.10 merge (2026-11-23)
+
+Upstream: parent `e0124c7` (67 commits), oscar-viewer `70dcf3de` (41), osh-oakridge-modules
+`fb66195b` (45), osh-addons `bcd697e4` (3), oscar-video-guides `a9381573` (18); osh-core needs
+nothing (ORNL's pin is already in ours). Merged with `--no-ff` into each `ornl-3.11-rollin`.
+
+What ORNL added: Users & Access console, offline Passkeys and QR invites, persistent sessions,
+14-character password minimum, Scoped View dropdown, Newest-first toggles, WCO UFF 2.0/3.0 cargo
+X-ray inspector, per-lane ControlByWeb WebRelay-Quad lights/sounder, Rapiscan RPM edge proxy,
+runtime extensions (pluggable OCR, offline PMTiles maps), USB NVMe backups, training sandbox and
+guided coach, a zero-login **GitHub System Updater**, bare-metal autoinstall tooling, NGINX
+1.30.7 (Nov 18 CVE), OCR accuracy work, D5/RS-350 wire-protocol replay tests.
+
+Conflicts and how they were resolved:
+
+| area | resolution |
+|---|---|
+| LaneSystem RPM/camera setup | ORNL's `reconcileLaneEndpoints`/`LaneEndpointSync` (two-way sync that remembers the last synced endpoint) replaces our "lane host/port is authoritative" sync; **extended to the Kromek D5** (`D5RPMConfig`), which ORNL's sync did not know, so mobile D5 lanes keep working; test added |
+| D5 driver | ORNL's SLIP framing (reads to the closing delimiter, EOF throws: the same spin we fixed) + router stop/await + null-safe reports; our reconnect-with-backoff, lock-guarded close and GPS location output kept |
+| RS-350 `MessageHandler` | one last-message clock (ORNL's), still stamped at start for our Comm Failure watchdog |
+| Viewer Navbar | ORNL's Scoped View, sandbox badge/coach, split admin + our logo, custom pages list and page-header slot |
+| WebID analysis | both fixed missing recent results; chained: our occupancy filter → ORNL's time window → full scan |
+| Lane health | ORNL's WebRelay state + our mobile-lane portal-fault exemption |
+| EventTable | our widget `fillHeight` + ORNL's sort toggle condition |
+| Locales | JSON three-way merge: 807 ORNL + 106 ours, no clashes |
+
+Verification: all Java modules and tests compile; lane (57 + D5 sync), RS-350 (7), D5 (5,
+incl. ORNL's replay/lifecycle suite), OSCAR service (250) tests pass; ffmpeg has one pre-existing
+failure (`FileTestH264` opens a Swing window; no display on this host, file unchanged by the
+merge). Viewer: typecheck, dependency audit, production build, and all 345 component tests pass.
+**Not yet done:** a release zip of this merge, a scratch/rehearsal run, or deployment to the live
+node (still on the 3.11.0-based build).
+
+**Watch: GitHub System Updater.** Admin-only and manual (Check, then Apply), but it checks
+`github.com/ORNL/oscar` releases. Applying an ORNL release on our node replaces this fork build
+(mobile detectors, widget pages, our fixes). Its source is `oscar.update.githubWebBaseUrl`.

@@ -26,7 +26,62 @@ if errorlevel 1 (
 goto menu
 
 :command
+call :dispatch %*
+exit /b %errorlevel%
+
+:dispatch
+if /I "%~1"=="remote-access" goto remote_access
+if /I "%~1"=="rpm-proxy" goto rpm_proxy
+if /I "%~1"=="usb-backup" goto usb_backup
+if /I "%~1"=="continual-backup" goto usb_backup
+if /I "%~1"=="sandbox" goto training_sandbox
+if /I "%~1"=="training-sandbox" goto training_sandbox
+if /I "%~1"=="update" goto system_update
+if /I "%~1"=="self-update" goto system_update
+if /I "%~1"=="create-autoinstall-usb" goto autoinstall_usb
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%OSCAR_SETUP%" %*
+exit /b %errorlevel%
+
+:autoinstall_usb
+if "%~2"=="" (
+    powershell.exe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File "%~dp0ubuntu\create-autoinstall-usb.ps1"
+    exit /b %errorlevel%
+)
+set "OSCAR_SUBARGS=%*"
+for /f "tokens=1* delims= " %%A in ("%OSCAR_SUBARGS%") do (
+    powershell.exe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File "%~dp0ubuntu\create-autoinstall-usb.ps1" %%B
+)
+exit /b %errorlevel%
+
+:remote_access
+shift
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0oscar-remote-access.ps1" %1 %2 %3 %4 %5 %6 %7 %8 %9
+exit /b %errorlevel%
+
+:rpm_proxy
+if "%~2"=="" (
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0oscar-rpm-proxy.ps1"
+    exit /b %errorlevel%
+)
+set "OSCAR_SUBARGS=%*"
+for /f "tokens=1* delims= " %%A in ("%OSCAR_SUBARGS%") do (
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0oscar-rpm-proxy.ps1" %%B
+)
+exit /b %errorlevel%
+
+:usb_backup
+shift
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0oscar-usb-backup.ps1" %1 %2 %3 %4 %5 %6 %7 %8 %9
+exit /b %errorlevel%
+
+:training_sandbox
+shift
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0oscar-sandbox.ps1" %1 %2 %3 %4 %5 %6 %7 %8 %9
+exit /b %errorlevel%
+
+:system_update
+shift
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0oscar-update.ps1" %1 %2 %3 %4 %5 %6 %7 %8 %9
 exit /b %errorlevel%
 
 :menu
@@ -39,9 +94,12 @@ echo OSCAR Administration
 echo ====================
 echo.
 echo Enter a command and any options. Examples:
+echo   create-autoinstall-usb
+echo   create-autoinstall-usb -ListDrives
 echo   init
 echo   init -Hostname oscar.local -Port 443
 echo   init -Hostname oscar.local -TlsSan oscar-site.example.org
+echo   reset-admin-password
 echo   start
 echo   stop
 echo   restart
@@ -54,9 +112,26 @@ echo   host-check
 echo   prepare-host
 echo   verify
 echo   upgrade
+echo   update check
+echo   update apply
 echo   backup
 echo   backup-verify -BackupId BACKUP_ID
 echo   restore -BackupId BACKUP_ID -Confirm BACKUP_ID
+echo   usb-backup list-drives
+echo   usb-backup prepare-drive -DriveLetter R -Mode continual
+echo   usb-backup mode continual
+echo   usb-backup mode occasional
+echo   usb-backup sync
+echo   usb-backup eject
+echo   usb-backup attach
+echo   usb-backup status
+echo   usb-backup restore -From R:\ -BackupKey FILE -Confirm RESTORE
+echo   sandbox start
+echo   sandbox status
+echo   sandbox stop
+echo   rpm-proxy configure -FromCsv lanes.csv -Mode port-map -Start
+echo   rpm-proxy status
+echo   rpm-proxy stop
 echo   archive status
 echo   archive verify
 echo   archive hold list
@@ -75,7 +150,7 @@ if /I "%OSCAR_INPUT%"=="exit" exit /b 0
 if /I "%OSCAR_INPUT%"=="quit" exit /b 0
 
 echo.
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%OSCAR_SETUP%" %OSCAR_INPUT%
+call :dispatch %OSCAR_INPUT%
 set "OSCAR_RESULT=%errorlevel%"
 echo.
 if not "%OSCAR_RESULT%"=="0" echo Command failed with exit code %OSCAR_RESULT%.

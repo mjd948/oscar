@@ -2,6 +2,8 @@
 **/target/
 **/build/
 **/.gradle/
+**/__pycache__/
+*.py[cod]
 **/.DStore
 **/.DS_Store
 **/.settings
@@ -15,6 +17,7 @@
 hivemq-config/
 hivemq-data/
 *.env
+!*.example.env
 tools/postgis-test/pgdata
 *.log
 
