@@ -457,3 +457,56 @@ lane's occupancy subsystem never initialised. Not from this release (3.11.11 cha
 
 Rollback: `bash oscar.sh stop` in `/opt/oscar/oscar-3.11.11-mjd948.1`, then `bash oscar.sh start`
 in `/opt/oscar/oscar-3.11.10-mjd948.4` (its `oscar:3.11.10` images are untouched; rehearsed).
+
+## New users can sign in: live deployment (2026-11-24)
+
+New accounts could not get in: every QR invite the Users page showed returned 410 ("invalid,
+expired, or already used"), the temporary password from Reset password never worked, and sign-in
+was case-sensitive (`mike` for `Mike`). Cause: osh-core's mutable `HandlerCollection` passed every
+request to every handler, and the viewer's root file server wraps its context in a security
+handler that sees every path, so `BasicSessionAuthenticator` ran each `/sensorhub/session` call
+twice. The second pass minted another invite (revoking the one returned) and reset the password
+again (replacing the one shown). Account creation itself was safe (its second pass fails with
+"already exists"). Fixes: osh-core `03286d8f` (stop dispatching once a handler answers), modules
+`d32712bf` (answer each request once; any-case usernames; case-only duplicates refused), viewer
+`9fefaef` (the banner's QR follows the newest invite). Parent `c0c3166`, tag `v3.11.11-mjd948.2`,
+zip `oscar-3.11.11-mjd948.2.zip` SHA-256 `100ffe483f085c0c…`. New read-only/self-cleaning checks:
+`check-user-onboarding.py`, `check-gateway-routes.sh`.
+
+**Rehearsal** (dind, `docker:27-dind` capped at 3.5 GB, 172.17.0.2 as `oscar-rehearsal.local`):
+the live `v3.11.11-mjd948.1` zip, `.env`/`secrets/`/`tls/` copied from live, the live `config.json`
+seeded into fresh labelled volumes (ORNL's upgrade migration needs an existing `config.json`), its 11
+RPM endpoints pointed at host simulators 10100–10103/10110.
+
+| step | result | time |
+|---|---|---|
+| baseline `acceptance.mjs` | pass, incl. Patrol 1 (simulated RS-350) | |
+| baseline `check-user-onboarding.py` (control) | reproduces live: row invite 410, reset password 401 in any case, case-only duplicate created | |
+| tag `:3.11.11-mjd948.1`, new sibling dir, `oscar.sh upgrade` | new `oscar:3.11.11` from the new dir; PostGIS image byte-identical | 74 s (`/healthz` down ~22 s) |
+| `check-user-onboarding.py` | 13/13 pass | |
+| `check-gateway-routes.sh` (308, 401, ConSys Basic + cookie, session API both paths, admin console, all 19 viewer routes) | pass | |
+| `acceptance`, `check-main-pages`, `check-view-widgets` (Patrol 1 spectra), `check-custom-pages`, `check-video-fit`, `check-event-log-paging`, `check-column-prefs` | all pass | |
+| node log | only the usual startup warnings | |
+| **rollback**: `stop` in `-mjd948.2`, re-tag `-mjd948.1` images as `:3.11.11`, `start` in `-mjd948.1` | healthy on the old image, acceptance passes | 5 s + 48 s |
+
+The second re-upgrade was skipped (the disk was at 81% with the rehearsal's 6.4 GB; ORNL deletes
+media at 85%). Rehearsal container, volume, dir (live accounts), hosts entry and simulators were
+removed before the live upgrade (disk back to 73%).
+
+**Live:** `/opt/oscar/oscar-3.11.11-mjd948.2` (`.env`, `secrets/`, `tls/` copied, identical); the
+replaced images were tagged `oscar:3.11.11-mjd948.1` / `oscar-postgis:3.11.11-mjd948.1` first.
+Before it, the admin had deleted the broken Mike and Test accounts (16:05), so only `admin` was
+left and `config.json` was current. `oscar.sh upgrade` 16:14:13–16:17:45 UTC, `/healthz` down
+16:14:51–16:17:12 (about 2 min 20 s; readiness waits out Patrol 1's RS-350, still down at the
+site). On live the PostGIS image was rebuilt with a new ID (same sources). Checks on live:
+`check-user-onboarding.py` 13/13 (probe account removed), `check-gateway-routes.sh` all pass,
+`/login` 200 for both tunnel hosts, `acceptance.mjs` (four portal lanes, cameras and video;
+`MOBILE=""`), `check-event-log-paging`, `check-main-pages`, `check-custom-pages`,
+`check-video-fit`, `check-view-widgets` (`RS350_LANE=""`) all pass; `archive verify` passes; every
+lane module started; log errors only from Patrol 1's offline RS-350 (as in 3.11.11); no
+storage-pressure activity. Disk 78%.
+
+Rollback: `bash oscar.sh stop` in `/opt/oscar/oscar-3.11.11-mjd948.2`, `docker tag
+oscar:3.11.11-mjd948.1 oscar:3.11.11 && docker tag oscar-postgis:3.11.11-mjd948.1
+oscar-postgis:3.11.11`, then `bash oscar.sh start` in `/opt/oscar/oscar-3.11.11-mjd948.1`
+(rehearsed). The older release brings the double-run bug back.

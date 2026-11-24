@@ -60,6 +60,13 @@ All read the admin password from `PW_FILE`; `OSCAR_BASE` defaults to `https://os
 | `check-column-prefs.mjs` | - | an event-table widget's hidden column and dragged width survive a reload, and do not leak into ORNL's `/event-log` |
 | `check-event-log-paging.mjs` | - | read-only, safe on live: the Event Log's Newest-first toggle flips, ORNL's offset CQL probe (`gammaAlarm=true AND neutronAlarm=false`, `offset=45`) returns 200, paging forward and back shows the same rows (visited pages come from the 3.11.11 cache), and no `/sensorhub/api/observations` request returns 5xx |
 
+Two more checks run without a browser (same `OSCAR_BASE` and `PW_FILE`):
+
+| script | what it proves |
+|---|---|
+| `check-user-onboarding.py` (`python3 -I`) | safe on live, cleans up after itself: a throwaway account (`PROBE_USER`, default `zzprobe`) can get in with every credential the Users page shows. The creation invite, the row's QR & Invite and the Reset password invite open `/login/enroll` (200, never consumed), an older invite is revoked (410), the reset temporary password signs in typed in any letter case, and a case-only duplicate account is refused. Before the 2026-11-24 fix every `/sensorhub/session` call ran twice, so the row invite and reset password were dead when shown |
+| `check-gateway-routes.sh` | read-only, safe on live: ORNL's Step-3 checks. HTTP→HTTPS 308, `/healthz`, anonymous API 401, ConSys with Basic and with the session cookie, the session API under `/sensorhub` and at the root, the admin console, and every viewer route exported in `web/oscar-viewer/web` |
+
 **Checking a viewer build against a running node without deploying it:** `verify-proxy.mjs` serves
 `web/oscar-viewer/web` (after `npm run build`) on `https://localhost:9443` and passes sign-in, API,
 MQTT and video through to the node's gateway (default `127.0.0.1:443`), so the checks above run on
