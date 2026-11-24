@@ -8,7 +8,8 @@ await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
 await page.click('[data-testid="add-page-button"]');
 await page.getByLabel('Page name').fill('Events wall');
 await page.getByRole('button', { name: /create/i }).click();
-await page.waitForURL(u => u.pathname.startsWith('/custom-page'));
+// The site may already be on a custom page (the editable main pages): wait for the new page's own id.
+await page.waitForURL(u => u.pathname.startsWith('/custom-page') && (u.searchParams.get('id') ?? '').startsWith('page-'));
 await page.click('[data-testid="edit-mode-toggle"]');
 await page.click('[data-testid="add-widget-button"]');
 await page.click('[data-testid="add-widget-event-table"]');

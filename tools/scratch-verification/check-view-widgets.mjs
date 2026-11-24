@@ -14,9 +14,10 @@ async function createPage(name, templateLabel) {
   await page.click('[data-testid="add-page-button"]');
   await page.getByLabel('Page name').fill(name);
   await page.getByLabel('Template').click();
-  await page.getByRole('option', { name: templateLabel }).click();
+  await page.getByRole('option', { name: templateLabel, exact: true }).click();
   await page.getByRole('button', { name: /create/i }).click();
-  await page.waitForURL(u => u.pathname.startsWith('/custom-page'), { timeout: 15000 });
+  // The site may already be on a custom page (the editable main pages): wait for the new page's own id.
+  await page.waitForURL(u => u.pathname.startsWith('/custom-page') && (u.searchParams.get('id') ?? '').startsWith('page-'), { timeout: 15000 });
 }
 async function addWidget(type) {
   await page.click('[data-testid="edit-mode-toggle"]');

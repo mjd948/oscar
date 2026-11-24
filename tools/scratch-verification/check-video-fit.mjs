@@ -9,9 +9,10 @@ await page.getByLabel('open drawer').or(page.locator('button[aria-label="Open dr
 await page.click('[data-testid="add-page-button"]');
 await page.getByLabel('Page name').fill('Video fit check');
 await page.getByLabel('Template').click();
-await page.getByRole('option', { name: 'Lane View layout' }).click();
+await page.getByRole('option', { name: 'Lane View layout', exact: true }).click();
 await page.getByRole('button', { name: /create/i }).click();
-await page.waitForURL(u => u.pathname.startsWith('/custom-page'), { timeout: 15000 });
+// The site may already be on a custom page (the editable main pages): wait for the new page's own id.
+  await page.waitForURL(u => u.pathname.startsWith('/custom-page') && (u.searchParams.get('id') ?? '').startsWith('page-'), { timeout: 15000 });
 await page.waitForSelector('[data-testid="widget-video"]', { timeout: 30000 });
 await page.locator('[data-testid="page-header-slot"] .MuiSelect-select').first().click();
 await page.getByRole('option', { name: process.env.LANE ?? 'Marshall' }).click();

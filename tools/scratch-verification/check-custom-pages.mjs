@@ -15,9 +15,10 @@ async function createPage(name, templateLabel) {
   await page.click('[data-testid="add-page-button"]');
   await page.getByLabel('Page name').fill(name);
   await page.getByLabel('Template').click();
-  await page.getByRole('option', { name: templateLabel }).click();
+  await page.getByRole('option', { name: templateLabel, exact: true }).click();
   await page.getByRole('button', { name: /create/i }).click();
-  await page.waitForURL(u => u.pathname.startsWith('/custom-page'), { timeout: 15000 });
+  // The site may already be on a custom page (the editable main pages): wait for the new page's own id.
+  await page.waitForURL(u => u.pathname.startsWith('/custom-page') && (u.searchParams.get('id') ?? '').startsWith('page-'), { timeout: 15000 });
   return page.url();
 }
 
@@ -30,7 +31,7 @@ check(await page.locator('[data-testid="widget-quick-view"] .leaflet-container')
 
 await page.reload({ waitUntil: 'domcontentloaded' });
 await page.waitForSelector('[data-testid="widget-system-status"]', { timeout: 30000 });
-check(page.url() === dashUrl, 'page survives reload at the same URL');
+check(page.url() === dashUrl, 'page survives reload at the same URL' + (page.url() === dashUrl ? '' : ` (${dashUrl} -> ${page.url()})`));
 check(await page.locator('[data-testid="custom-pages-nav"]').textContent().then(t => (t ?? '').includes('Ops wall')).catch(() => false), 'page listed in the nav drawer');
 
 // edit mode: add a map widget and alarm stats next to the quick-view map
