@@ -337,3 +337,23 @@ dump and tarball in `/srv/oscar-3.5-archive` stay).
 Rollback until sign-off: `bash oscar.sh stop` in `/opt/oscar/oscar-3.11.10`, then
 `bash oscar.sh start` in `/opt/oscar/oscar-3.11.0` (rehearsed; its `oscar:3.11.0` overlay image is
 kept). 3.5 is no longer a rollback target.
+
+## Widgets for every ORNL view: live deployment (2026-11-24)
+
+Viewer `f3bb4d9` (parent `v3.11.10-mjd948.2`), backend modules unchanged; zip SHA-256 `c56e150c…`.
+Same-version update, so the release went to a uniquely named sibling directory
+`/opt/oscar/oscar-3.11.10-mjd948.2` (`.env`, `secrets/`, `tls/` copied; `.env` identical), and the
+images it replaces were tagged first as `oscar:3.11.10-mjd948.1` / `oscar-postgis:3.11.10-mjd948.1`.
+`oscar.sh upgrade` 00:14:12–00:17:34 UTC, downtime about 2.5 min (Patrol 1's RS-350 still offline
+at the site, so readiness waits out its first connection loop).
+
+Checks on live: `check-view-widgets.mjs` (`RS350_LANE=""`, Patrol 1 offline; spectra verified in
+the rehearsal against the simulator), `check-custom-pages`, `check-video-fit`, `acceptance.mjs`
+and ORNL Step-3, all pass. The Event Details widget showed a live Memorial Ave alarm with chart,
+video, occupancy overview and daily file. Its OCR crop (2026-11-23) returned 404: crops from
+2026-11-20 to the 2026-11-23 disk fix were removed by storage-pressure cleanup (none left for
+20–22 Nov, 69 for 23 Nov); crops since the fix are kept.
+
+Rollback: `bash oscar.sh stop` in `oscar-3.11.10-mjd948.2`, `docker tag oscar:3.11.10-mjd948.1
+oscar:3.11.10 && docker tag oscar-postgis:3.11.10-mjd948.1 oscar-postgis:3.11.10`, then
+`bash oscar.sh start` in `/opt/oscar/oscar-3.11.10`.

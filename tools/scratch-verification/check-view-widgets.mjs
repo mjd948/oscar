@@ -5,6 +5,7 @@ import { open, sleep } from './harness.mjs';
 const { browser, page, errors } = await open();
 const fail = [];
 const check = (ok, msg) => { console.log(ok ? 'PASS' : 'FAIL', msg); if (!ok) fail.push(msg); };
+// RS350_LANE="" skips the spectra section (e.g. when the site's RS-350 is offline).
 const RS350_LANE = process.env.RS350_LANE ?? 'Patrol 1';
 const PORTAL_LANE = process.env.PORTAL_LANE ?? 'Marshall';
 
@@ -68,29 +69,34 @@ check(await page.locator('[data-testid="event-details-widget-open-page"]').count
 check(page.url().includes('/custom-page'), 'selecting an event did not navigate away from the page');
 if (process.env.SHOT_DIR) await page.locator('[data-testid="widget-event-details"]').screenshot({ path: `${process.env.SHOT_DIR}/widget-event-details.png` });
 
-// RS-350 spectra
-await createPage('Spectra', 'Lane View layout');
-await page.waitForSelector('[data-testid="widget-video"]', { timeout: 30000 });
-await addWidget('rs350-spectrum');
-await pickLane(RS350_LANE);
-await page.waitForSelector('[data-testid="rs350-spectrum-widget"]', { timeout: 60000 }).catch(() => {});
-await sleep(15000);
-const spectrumCanvas = await page.locator('[data-testid="rs350-spectrum-widget"] canvas').count();
-check(spectrumCanvas > 0, `RS-350 spectra drawn for ${RS350_LANE} (${spectrumCanvas} canvas)`);
-if (process.env.SHOT_DIR) await page.locator('[data-testid="widget-rs350-spectrum"]').screenshot({ path: `${process.env.SHOT_DIR}/widget-rs350-spectrum.png` });
-await page.screenshot({ path: process.env.SHOT ?? '/tmp/view-widgets.png' });
-await pickLane(PORTAL_LANE);
-await page.waitForSelector('[data-testid="rs350-spectrum-not-rs350"]', { timeout: 30000 }).catch(() => {});
-check(await page.locator('[data-testid="rs350-spectrum-not-rs350"]').count() === 1, `RS-350 widget explains ${PORTAL_LANE} is not an RS-350 lane`);
+if (RS350_LANE) {
+  // RS-350 spectra
+  await createPage('Spectra', 'Lane View layout');
+  await page.waitForSelector('[data-testid="widget-video"]', { timeout: 30000 });
+  await addWidget('rs350-spectrum');
+  await pickLane(RS350_LANE);
+  await page.waitForSelector('[data-testid="rs350-spectrum-widget"]', { timeout: 60000 }).catch(() => {});
+  await sleep(15000);
+  const spectrumCanvas = await page.locator('[data-testid="rs350-spectrum-widget"] canvas').count();
+  check(spectrumCanvas > 0, `RS-350 spectra drawn for ${RS350_LANE} (${spectrumCanvas} canvas)`);
+  if (process.env.SHOT_DIR) await page.locator('[data-testid="widget-rs350-spectrum"]').screenshot({ path: `${process.env.SHOT_DIR}/widget-rs350-spectrum.png` });
+  await page.screenshot({ path: process.env.SHOT ?? '/tmp/view-widgets.png' });
+  await pickLane(PORTAL_LANE);
+  await page.waitForSelector('[data-testid="rs350-spectrum-not-rs350"]', { timeout: 30000 }).catch(() => {});
+  check(await page.locator('[data-testid="rs350-spectrum-not-rs350"]').count() === 1, `RS-350 widget explains ${PORTAL_LANE} is not an RS-350 lane`);
+}
 
-// A fresh event's clip may not be retained yet: ORNL's own /event-details page requests it and
-// gets the same 404. Tolerate that, and only that.
-const onlyClip404s = notFound.length > 0 && notFound.every(u => u.includes('/buckets/videos/media/'));
+// Retained media can be missing: a fresh event's clip is not finalised yet, and retention or
+// storage-pressure cleanup removes clips and OCR crops. ORNL's own /event-details page requests the
+// same files and gets the same 404s, so they are reported as missing data, not app errors.
+const isRetainedMedia = (u) => u.includes('/buckets/videos/media/') || u.includes('/buckets/ocr/crops/');
+const onlyClip404s = notFound.length > 0 && notFound.every(isRetainedMedia);
+if (onlyClip404s) console.log(`NOTE ${notFound.length} retained-media file(s) not on the node (missing data, not an app error)`);
 const appErrors = errors.filter(e => !/SSL certificate|Service ?Worker|MUI X: useResizeContainer|getUserMedia|NotFoundError|Requested device not found/i.test(e))
   .filter(e => !(onlyClip404s && /Failed to load resource: the server responded with a status of 404/.test(e)))
   // ORNL's RS350BackpackView embeds its video player even for a camera-less RS-350 lane, which
   // logs this on ORNL's own Lane View too.
-  .filter(e => !e.includes(`No video control stream is available for lane ${RS350_LANE}`));
+  .filter(e => !(RS350_LANE && e.includes(`No video control stream is available for lane ${RS350_LANE}`)));
 if (notFound.length) console.log('404s:', JSON.stringify([...new Set(notFound)].slice(0, 8)));
 check(appErrors.length === 0, 'no page errors: ' + JSON.stringify(appErrors.slice(0, 5)));
 console.log(fail.length ? `FAILED ${fail.length}` : 'ALL PASS');
