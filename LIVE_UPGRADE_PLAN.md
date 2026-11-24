@@ -510,3 +510,54 @@ Rollback: `bash oscar.sh stop` in `/opt/oscar/oscar-3.11.11-mjd948.2`, `docker t
 oscar:3.11.11-mjd948.1 oscar:3.11.11 && docker tag oscar-postgis:3.11.11-mjd948.1
 oscar-postgis:3.11.11`, then `bash oscar.sh start` in `/opt/oscar/oscar-3.11.11-mjd948.1`
 (rehearsed). The older release brings the double-run bug back.
+
+## A late detector no longer strands its lane: live deployment (2026-11-24)
+
+The node restarted at 16:15 (the sign-in deploy) while Patrol 1's RS-350 was down. SensorSystem
+gives each auto-start member 10 s, so "Cannot start subsystem 'Patrol 1 - Occupancy'". At 17:07
+the RPM recovery supervisor brought the detector back, and LaneSystem re-ran the occupancy
+process's `init()` but nothing started it. Patrol 1 recorded nothing and `/tmp/oscar-ready` stayed
+withdrawn (container unhealthy) until a manual `oscar.sh restart` at 18:47. The 16:15 notes above
+("every lane module started") missed it. Fix: modules `b1ec3cdb` (`OccupancyProcessStarter`
+starts the process once the lane's auto-start pass is over), parent `b17ab8d`, tag
+`v3.11.11-mjd948.3`, zip `oscar-3.11.11-mjd948.3.zip` SHA-256 `34de8e962e43c801…` (viewer
+byte-identical to `-mjd948.2`).
+
+**Disk first:** 82% before the build. With the user's OK, deleted the superseded installs
+(`oscar-3.11.0`, `oscar-3.11.10`, `-3.11.10-mjd948.2/.3`), their images (`oscar:3.11.0*`,
+`oscar:3.11.10-mjd948.1/2/3` and the PostGIS tags), and old zips (3.11.0, 3.11.10-mjd948.1/2,
+3.5.0, 3.6.0-rc.1). That brought the disk to 71%.
+
+**Rehearsal** (dind, `docker:27-dind` capped at 3.5 GB, 172.17.0.2). The live `config.json` was
+seeded into fresh labelled volumes, its 11 RPM endpoints and 6 sync markers pointed at host
+simulators 10100–10103/10110, with `OSCAR_ARCHIVE_DIR` and `-Xmx1600m` set for the rehearsal.
+
+| step | result |
+|---|---|
+| baseline `-mjd948.2`, all simulators up | healthy; Patrol 1 occupancy started, dailyFile at 1 Hz |
+| **control**: RS-350 simulator off → `oscar.sh restart` → "Cannot start subsystem 'Patrol 1 - Occupancy'" → simulator on | supervisor recovered the RPM in 5 s; occupancy process **initialized, never started**, dailyFile stale, ready marker **absent** (reproduces live) |
+| tag `:3.11.11-mjd948.2`, `oscar.sh upgrade` in `-mjd948.3` | 67 s, healthy, fix class in the running jar |
+| **fix**: same late-detector run | "Starting occupancy process Patrol 1 - Occupancy after its detector came up" 1 ms after init; dailyFile fresh; ready marker present; no "already started" warnings on a normal boot |
+| **rollback**: `stop` in `-mjd948.3`, re-tag `-mjd948.2` images, `start` in `-mjd948.2` | 6 s + 49 s, healthy on the old image |
+
+Rehearsal container, volume, dir (live accounts) and simulators were removed before the live upgrade.
+
+**Live:** `/opt/oscar/oscar-3.11.11-mjd948.3` (`.env`, `secrets/`, `tls/` copied, identical). The
+replaced images were tagged `oscar:3.11.11-mjd948.2` / `oscar-postgis:3.11.11-mjd948.2` first.
+`oscar.sh upgrade` ran 20:05:36–20:07:18 UTC, with `/healthz` down 20:06:11–20:06:45 (34 s; the
+RS-350 was up). Checks on live:
+- fix class in the running jar; every lane module started, including `Patrol 1 - Occupancy`;
+  Patrol 1 dailyFile fresh; ready marker present; 0 ERROR lines since the upgrade;
+- `acceptance.mjs` with `MOBILE="Patrol 1"`: four portal lanes, cameras and video, Patrol 1
+  online, walker moving;
+- ORNL's Step-7 route/heading loop; `check-event-log-paging`; `check-gateway-routes.sh` 29/29;
+  `archive verify`. Disk 76%.
+
+Known gap (pre-existing, not this fix): `WebIdHelper` waits only 5 s for the occupancy process, so
+after a late detector WebID analysis stays unattached for that lane until the next restart
+("Failed to create WebId/Occupancy subscription").
+
+Rollback: `bash oscar.sh stop` in `/opt/oscar/oscar-3.11.11-mjd948.3`, `docker tag
+oscar:3.11.11-mjd948.2 oscar:3.11.11 && docker tag oscar-postgis:3.11.11-mjd948.2
+oscar-postgis:3.11.11`, then `bash oscar.sh start` in `/opt/oscar/oscar-3.11.11-mjd948.2`
+(rehearsed).
