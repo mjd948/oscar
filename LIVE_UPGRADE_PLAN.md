@@ -378,3 +378,34 @@ Rollback: `bash oscar.sh stop` in `oscar-3.11.10-mjd948.3`, re-tag `oscar:3.11.1
 `oscar-postgis:3.11.10-mjd948.2` as `:3.11.10`, `bash oscar.sh start` in
 `/opt/oscar/oscar-3.11.10-mjd948.2`. Without a rollback, the switch alone restores ORNL's pages for
 anyone who wants them.
+
+## One sidebar list of widget dashboards: live deployment (2026-11-24)
+
+The sidebar has two sections: every widget dashboard (the built-in ones first, the user's after,
+Add last) and the fixed settings pages. Built-in dashboards can be renamed and deleted (with a
+confirmation); the "Editable main pages" switch is gone. Dashboards open at
+`/dashboard/?name=<slug>`; old `/custom-page/?id=` links redirect. A deleted built-in's ORNL route
+(a lane click, an alarm notification) opens ORNL's original page until a dashboard made from the
+same layout takes it back; home falls back to the first dashboard. Saved layouts migrate to schema 4.
+
+Viewer `068bddc`, parent tag `v3.11.10-mjd948.4` (`26e855a`), zip `oscar-3.11.10-mjd948.4.zip`
+SHA-256 `2244c971…`. Release dir `/opt/oscar/oscar-3.11.10-mjd948.4` (`.env` identical, `secrets/`
+and `tls/` copied); the replaced images were tagged `oscar:3.11.10-mjd948.3` /
+`oscar-postgis:3.11.10-mjd948.3` first. `oscar.sh upgrade` 13:57:58–14:01:36 UTC.
+
+No dind rehearsal: the change is viewer-only, so the build was checked before deploying through
+`tools/scratch-verification/verify-proxy.mjs` (the new export served locally, everything else
+passed to the live gateway). `check-main-pages`, `check-custom-pages` and `check-view-widgets` all
+pass, and a real schema-3 saved state from the deployed build (a user page, switch set to ORNL)
+migrated with the page kept and the switch dropped. On live after the upgrade: the served
+`/dashboard/` bundle matches the verified build; `check-main-pages`, `check-custom-pages` and
+`acceptance.mjs` (4 portal lanes online, live video) pass.
+
+Opened by raw IP (`https://127.0.0.1`), the sign-in page logs one console 400. That is ORNL's
+passkey options call (`/login/webauthn/options`), which refuses IP addresses; by hostname it is
+clean. Not related to this release.
+
+Rollback: `bash oscar.sh stop` in `oscar-3.11.10-mjd948.4`, re-tag `oscar:3.11.10-mjd948.3` and
+`oscar-postgis:3.11.10-mjd948.3` as `:3.11.10`, `bash oscar.sh start` in
+`/opt/oscar/oscar-3.11.10-mjd948.3`. The older viewer keeps dashboards saved by this release, but
+brings back deleted built-ins, restores their original names and lists them under ORNL's menu again.
