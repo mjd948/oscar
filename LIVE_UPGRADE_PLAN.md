@@ -357,3 +357,24 @@ video, occupancy overview and daily file. Its OCR crop (2026-11-23) returned 404
 Rollback: `bash oscar.sh stop` in `oscar-3.11.10-mjd948.2`, `docker tag oscar:3.11.10-mjd948.1
 oscar:3.11.10 && docker tag oscar-postgis:3.11.10-mjd948.1 oscar-postgis:3.11.10`, then
 `bash oscar.sh start` in `/opt/oscar/oscar-3.11.10`.
+
+## Editable main pages: live deployment (2026-11-24)
+
+ORNL's main sidebar pages (Dashboard, Events, State of Health, Map, National, Report Generator,
+Alarm Transfer, and Lane View, which has an RS-350 variant) now open built-in editable widget pages.
+A sidebar switch "Editable main pages" (per browser, default on) goes back to ORNL's originals.
+Viewer `8aef021`, parent tag `v3.11.10-mjd948.3`, zip SHA-256 `fda91160…`. Release dir
+`/opt/oscar/oscar-3.11.10-mjd948.3`; the replaced images were tagged `oscar:3.11.10-mjd948.2` /
+`oscar-postgis:3.11.10-mjd948.2` first. `oscar.sh upgrade` 01:20:02–01:23:33 UTC (downtime about
+2.5 min; Patrol 1 offline at the site).
+
+Rehearsed in dind with the live config and simulators: `check-main-pages` (all sidebar entries,
+typed ORNL addresses, lane click, RS-350 swap with Patrol 1 spectra, edits survive reload, Reset,
+no Delete, switch off and on), `check-view-widgets`, `check-custom-pages`, `check-column-prefs`,
+`check-video-fit`, `acceptance`: all pass, after fixing a real bug the rehearsal found (Reset
+dropped a main page's marker). On live, the same checks pass (`RS350_LANE=""`).
+
+Rollback: `bash oscar.sh stop` in `oscar-3.11.10-mjd948.3`, re-tag `oscar:3.11.10-mjd948.2` and
+`oscar-postgis:3.11.10-mjd948.2` as `:3.11.10`, `bash oscar.sh start` in
+`/opt/oscar/oscar-3.11.10-mjd948.2`. Without a rollback, the switch alone restores ORNL's pages for
+anyone who wants them.
