@@ -561,3 +561,40 @@ Rollback: `bash oscar.sh stop` in `/opt/oscar/oscar-3.11.11-mjd948.3`, `docker t
 oscar:3.11.11-mjd948.2 oscar:3.11.11 && docker tag oscar-postgis:3.11.11-mjd948.2
 oscar-postgis:3.11.11`, then `bash oscar.sh start` in `/opt/oscar/oscar-3.11.11-mjd948.2`
 (rehearsed).
+
+## WebID and OCR re-attach after a late detector: live deployment (2026-11-24)
+
+LaneSystem's occupancy helpers bind to the occupancy producer at lane start. `WebIdHelper` waits 5 s
+and `OcrHelper` 10 s for it to reach STARTED, and both give up at once when it is in error
+(`waitForState` rethrows the module's error). So after a detector that was offline at boot came
+back, the RS-350 lane ran without WebID ("Failed to create WebId/Occupancy subscription") and a
+portal lane without vehicle OCR ("OCR inactive on lane") until the next restart. Fix: modules
+`61cbdf00`. Each helper reports whether it attached; when the occupancy producer reaches STARTED
+after the lane's auto-start pass, the lane re-creates the helpers that gave up. EML is re-attached
+on portal lanes only, since on RS-350 lanes it never subscribed before. Parent `d138abc`, tag
+`v3.11.11-mjd948.4`, zip SHA-256 `6dab6031382152ed…`.
+
+**Rehearsal** (dind, as for -mjd948.3), RS-350 (Patrol 1) **and** Rapiscan 10100 (Marshall)
+simulators off at boot, then back:
+
+| run | result |
+|---|---|
+| control on `-mjd948.3` | Marshall "OCR inactive" and Patrol 1 "Failed to create WebId" stay so after both RPMs recover |
+| first `-mjd948.4` build, normal boot | all helpers attach, but a spurious "Re-attached EML" on Patrol 1 → EML re-attach limited to portal lanes, rebuilt |
+| final `-mjd948.4`, normal boot | no re-attach lines |
+| final `-mjd948.4`, late detectors | "Re-attached WebID … Patrol 1" + both WebID subscriptions; "Re-attached vehicle OCR … Marshall" + OCR subscription; readiness present |
+| rollback to `-mjd948.3` | 5 s + 53 s, healthy |
+
+**Live:** `/opt/oscar/oscar-3.11.11-mjd948.4`; replaced images tagged `:3.11.11-mjd948.3` first;
+`oscar.sh upgrade` ran 20:48:35–20:50:23 UTC, with `/healthz` down 20:49:18–20:49:52 (34 s). Checks:
+- WebID subscribed on Patrol 1, OCR subscribed on all four portal lanes, nothing re-attached (normal
+  boot), every lane module started, 0 ERROR lines;
+- `acceptance.mjs` (Patrol 1 included), Step-7 routes, `check-event-log-paging`,
+  `check-gateway-routes.sh` 29/29, `archive verify`.
+
+The disk reached 81% after the build; `docker builder prune -f` (21.9 GB of unused build cache)
+brought it to 59%.
+
+Rollback: `bash oscar.sh stop` in `/opt/oscar/oscar-3.11.11-mjd948.4`, `docker tag
+oscar:3.11.11-mjd948.3 oscar:3.11.11 && docker tag oscar-postgis:3.11.11-mjd948.3
+oscar-postgis:3.11.11`, then `bash oscar.sh start` in `/opt/oscar/oscar-3.11.11-mjd948.3`.
