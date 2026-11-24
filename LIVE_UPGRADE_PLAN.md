@@ -409,3 +409,51 @@ Rollback: `bash oscar.sh stop` in `oscar-3.11.10-mjd948.4`, re-tag `oscar:3.11.1
 `oscar-postgis:3.11.10-mjd948.3` as `:3.11.10`, `bash oscar.sh start` in
 `/opt/oscar/oscar-3.11.10-mjd948.3`. The older viewer keeps dashboards saved by this release, but
 brings back deleted built-ins, restores their original names and lists them under ORNL's menu again.
+
+## Update to 3.11.11 (ORNL merge): live deployment (2026-11-24)
+
+ORNL 3.11.11 merged into the rollin branches (parent `bde0652`, osh-core `c7e43068`, modules
+`97611077`, viewer `38219716`, osh-addons `06cb2813`; details in `ROLL_IN_TRIAGE.md`). It adds the
+Event Log visited-page cache and backward prefetch, `phenomenonTime`-bounded live alarm lookups,
+the PostGIS boolean alarm prefilter and `FederatedObsStore` offset pushdown. No schema or storage
+script changes, so 3.11.10 stays a safe rollback target. Parent tag `v3.11.11-mjd948.1`, zip
+`oscar-3.11.11-mjd948.1.zip` SHA-256 `43ebe9d47267b358…` (viewer chunks and the PostGIS, core and
+service jars checked against the merged build).
+
+**Rehearsal** (dind, `docker:27-dind` capped at 3.5 GB, 172.17.0.2 as `oscar-rehearsal.local`):
+the live `v3.11.10-mjd948.4` zip with the live `config.json`, its 11 RPM endpoints pointed at
+host simulators 10100–10103/10110 (cameras left on the site simulator).
+
+| step | result | time |
+|---|---|---|
+| baseline `acceptance.mjs` | pass, incl. Patrol 1 (simulated RS-350) | |
+| copy `.env`/`secrets/`/`tls/` into the 3.11.11 dir, `oscar.sh upgrade` | `oscar:3.11.11` from the new dir, `OSCAR_VERSION` set from the release, GUI updater still disabled | 81 s (`/healthz` down ~25 s) |
+| `acceptance.mjs`, history | pass; observations 2,040 → 4,566 | |
+| `check-event-log-paging` (new), `check-main-pages`, `check-view-widgets` (Patrol 1 spectra), `check-custom-pages`, `check-video-fit`, `check-column-prefs` | all pass | |
+| Step-3 checks (308 to HTTPS, anonymous 401, ConSys 200, all viewer routes, admin), `archive verify` | pass | |
+| **rollback**: `stop` in 3.11.11, `start` in 3.11.10 | healthy, acceptance passes, data intact | 6 s + 48 s |
+| upgrade again | healthy, acceptance passes | 56 s |
+
+Rehearsal container, its volume, the rehearsal dir (live accounts), the hosts entry and the
+simulators were removed afterwards.
+
+**Live:** `/opt/oscar/oscar-3.11.11-mjd948.1` (`.env`, `secrets/`, `tls/` copied, identical);
+`oscar.sh upgrade` 14:58:52–15:02:37 UTC, `/healthz` down 14:59:43–15:02:04 (about 2 min 20 s;
+readiness waits out Patrol 1's RS-350, still down at the site). The images are new tags
+(`oscar:3.11.11`, `oscar-postgis:3.11.11`), so nothing was re-tagged. Checks on live: 308, 401
+anonymous, ConSys 200, `/login` 200 for the tunnel hosts, all viewer routes 200;
+`acceptance.mjs` (four portal lanes, cameras and video; `MOBILE=""`), `check-event-log-paging`
+(back to a visited page in 93 ms, no 5xx), `check-main-pages`, `check-custom-pages`,
+`check-video-fit`, `check-view-widgets` (`RS350_LANE=""`) all pass; `archive verify` passes;
+occupancies from before the upgrade (14:30–14:58), the previous day and after it are all
+queryable for all four portal lanes (the 14:30 hot partition rolled into the archive at 15:00 as
+usual); OCR running; no storage-pressure activity. Disk 72% after the build (ORNL deletes media at
+85%).
+
+Startup log noise, all from Patrol 1's offline RS-350: the comm-provider retries, the RPM recovery
+supervisor restarting it, and one `WebIdHelper` NullPointerException ("Failed to create
+WebId/Occupancy subscription", `DefaultSystemRegistry.getDatabase` with a null UID) because the
+lane's occupancy subsystem never initialised. Not from this release (3.11.11 changes no lane code).
+
+Rollback: `bash oscar.sh stop` in `/opt/oscar/oscar-3.11.11-mjd948.1`, then `bash oscar.sh start`
+in `/opt/oscar/oscar-3.11.10-mjd948.4` (its `oscar:3.11.10` images are untouched; rehearsed).
