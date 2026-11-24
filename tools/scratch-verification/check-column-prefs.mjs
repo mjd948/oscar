@@ -1,6 +1,6 @@
 // Event-table widget column preferences persist: hide a column via the grid's own menu, widen
 // another by dragging its separator, reload, and both stick. ORNL's /event-log is unaffected.
-import { open, sleep, BASE } from './harness.mjs';
+import { open, sleep, BASE, waitForDashboard } from './harness.mjs';
 const { browser, page, errors } = await open();
 const results = [];
 const check = (ok, msg) => { results.push(ok); console.log(ok ? 'PASS' : 'FAIL', msg); };
@@ -8,8 +8,8 @@ await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
 await page.click('[data-testid="add-page-button"]');
 await page.getByLabel('Page name').fill('Events wall');
 await page.getByRole('button', { name: /create/i }).click();
-// The site may already be on a custom page (the editable main pages): wait for the new page's own id.
-await page.waitForURL(u => u.pathname.startsWith('/custom-page') && (u.searchParams.get('id') ?? '').startsWith('page-'));
+// The site is already on a dashboard (it opens on the built-in Dashboard): wait for the new one's name.
+if (!await waitForDashboard(page, 'Events wall')) throw new Error('new dashboard Events wall did not open');
 await page.click('[data-testid="edit-mode-toggle"]');
 await page.click('[data-testid="add-widget-button"]');
 await page.click('[data-testid="add-widget-event-table"]');

@@ -1,7 +1,7 @@
 // Widgets for ORNL's remaining views: State of Health, Report Generator, Alarm Transfer, Event
 // Lookup, Event Details (follows the clicked table row) and RS-350 spectra.
 //   OSCAR_BASE=https://<host> PW_FILE=<admin pw file> [RS350_LANE="Patrol 1"] [PORTAL_LANE=Marshall] node check-view-widgets.mjs
-import { open, sleep } from './harness.mjs';
+import { open, sleep, waitForDashboard } from './harness.mjs';
 const { browser, page, errors } = await open();
 const fail = [];
 const check = (ok, msg) => { console.log(ok ? 'PASS' : 'FAIL', msg); if (!ok) fail.push(msg); };
@@ -16,8 +16,8 @@ async function createPage(name, templateLabel) {
   await page.getByLabel('Template').click();
   await page.getByRole('option', { name: templateLabel, exact: true }).click();
   await page.getByRole('button', { name: /create/i }).click();
-  // The site may already be on a custom page (the editable main pages): wait for the new page's own id.
-  await page.waitForURL(u => u.pathname.startsWith('/custom-page') && (u.searchParams.get('id') ?? '').startsWith('page-'), { timeout: 15000 });
+  // The site is already on a dashboard (it opens on the built-in Dashboard): wait for the new one's name.
+  if (!await waitForDashboard(page, name)) throw new Error(`new dashboard ${name} did not open`);
 }
 async function addWidget(type) {
   await page.click('[data-testid="edit-mode-toggle"]');
@@ -67,7 +67,7 @@ const canvases = await page.locator('[data-testid="event-details-widget"] canvas
 check(canvases > 0, `event details draws the event's charts (${canvases} canvas)`);
 await page.waitForSelector('[data-testid="event-details-widget-open-page"]', { timeout: 30000 }).catch(() => {});
 check(await page.locator('[data-testid="event-details-widget-open-page"]').count() === 1, 'event details resolved the event id (Open full page offered)');
-check(page.url().includes('/custom-page'), 'selecting an event did not navigate away from the page');
+check(page.url().includes('/dashboard/'), 'selecting an event did not navigate away from the page');
 if (process.env.SHOT_DIR) await page.locator('[data-testid="widget-event-details"]').screenshot({ path: `${process.env.SHOT_DIR}/widget-event-details.png` });
 
 if (RS350_LANE) {

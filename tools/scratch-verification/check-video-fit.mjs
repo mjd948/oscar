@@ -1,6 +1,6 @@
 // The Video Stream widget fits ORNL's live player inside its frame: the picture is visible
 // without scrolling (ORNL's player is a fixed 500 px <video> sized for the Lane View page).
-import { open, sleep } from './harness.mjs';
+import { open, sleep, waitForDashboard } from './harness.mjs';
 const { browser, page, errors } = await open();
 const fail = [];
 const check = (ok, msg) => { console.log(ok ? 'PASS' : 'FAIL', msg); if (!ok) fail.push(msg); };
@@ -11,8 +11,8 @@ await page.getByLabel('Page name').fill('Video fit check');
 await page.getByLabel('Template').click();
 await page.getByRole('option', { name: 'Lane View layout', exact: true }).click();
 await page.getByRole('button', { name: /create/i }).click();
-// The site may already be on a custom page (the editable main pages): wait for the new page's own id.
-  await page.waitForURL(u => u.pathname.startsWith('/custom-page') && (u.searchParams.get('id') ?? '').startsWith('page-'), { timeout: 15000 });
+// The site is already on a dashboard (it opens on the built-in Dashboard): wait for the new one's name.
+if (!await waitForDashboard(page, 'Video fit check')) throw new Error('new dashboard Video fit check did not open');
 await page.waitForSelector('[data-testid="widget-video"]', { timeout: 30000 });
 await page.locator('[data-testid="page-header-slot"] .MuiSelect-select').first().click();
 await page.getByRole('option', { name: process.env.LANE ?? 'Marshall' }).click();

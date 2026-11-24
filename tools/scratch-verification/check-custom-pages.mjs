@@ -1,14 +1,14 @@
-// Custom widget pages on ORNL 3.11: ORNL's dashboard untouched, pages created from templates,
-// persisted across reload, widgets rendering, edit-mode add widget, two maps on one page.
-import { open, sleep, ts, BASE } from './harness.mjs';
+// Custom widget dashboards on ORNL 3.11: the site opens on the built-in Dashboard, pages created
+// from templates persist across reload, widgets render, edit-mode add widget, two maps on one page.
+import { open, sleep, ts, BASE, waitForDashboard } from './harness.mjs';
 const { browser, page, errors } = await open();
 const fail = [];
 const check = (ok, msg) => { console.log(ok ? 'PASS' : 'FAIL', msg); if (!ok) fail.push(msg); };
 
 await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
-await page.getByRole('heading', { name: 'Lane Status', exact: true }).first().waitFor({ timeout: 30000 });
+check(await waitForDashboard(page, 'dashboard'), 'the site opens on the built-in Dashboard');
 await page.waitForSelector('[data-testid^="lane-health-card-"]', { timeout: 30000 }).catch(() => {});
-check(await page.locator('[data-testid^="lane-health-card-"]').count() >= 4, 'ORNL dashboard still renders its own lane cards');
+check(await page.locator('[data-testid^="lane-health-card-"]').count() >= 4, 'the Dashboard renders its lane cards');
 
 async function createPage(name, templateLabel) {
   await page.getByLabel('open drawer').or(page.locator('button[aria-label="Open drawer"]')).first().click().catch(() => {});
@@ -17,8 +17,8 @@ async function createPage(name, templateLabel) {
   await page.getByLabel('Template').click();
   await page.getByRole('option', { name: templateLabel, exact: true }).click();
   await page.getByRole('button', { name: /create/i }).click();
-  // The site may already be on a custom page (the editable main pages): wait for the new page's own id.
-  await page.waitForURL(u => u.pathname.startsWith('/custom-page') && (u.searchParams.get('id') ?? '').startsWith('page-'), { timeout: 15000 });
+  // The site is already on a dashboard (it opens on the built-in Dashboard): wait for the new one's name.
+  if (!await waitForDashboard(page, name)) throw new Error(`new dashboard ${name} did not open`);
   return page.url();
 }
 

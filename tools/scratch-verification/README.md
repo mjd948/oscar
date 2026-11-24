@@ -55,8 +55,17 @@ All read the admin password from `PW_FILE`; `OSCAR_BASE` defaults to `https://os
 | `check-video.mjs` | `CPID` (oscar container PID), `LANE`, `RTSP_PORT` | live HLS plays, survives a 45 s RTSP cut in the container's netns, and resumes unattended |
 | `check-view-widgets.mjs` | `RS350_LANE` (Patrol 1), `PORTAL_LANE` (Marshall), `SHOT_DIR` | widgets for ORNL's remaining views: State of Health, Report Generator, Alarm Transfer, Event Lookup, Event Details following a clicked row (without leaving the page), RS-350 spectra |
 | `check-video-fit.mjs` | `LANE` (default Marshall) | the Video Stream widget fits ORNL's player in its frame: no scrolling, video plays |
-| `check-custom-pages.mjs` | - | ORNL's dashboard untouched; custom pages from the Dashboard and Lane View templates render every widget, persist across reload, two maps share a page, video/chart follow the page lane |
+| `check-main-pages.mjs` | `RS350_LANE` (Patrol 1, `""` when offline), `PORTAL_LANE` (Marshall) | the sidebar has two sections (widget dashboards then settings, no ORNL page switch); every built-in dashboard, a typed ORNL address, a legacy `/custom-page/?id=` URL and a lane click open `/dashboard/?name=<slug>`; RS-350 lanes get the spectra Lane View; edits survive a reload and Reset restores; renaming moves the URL; a deleted built-in stays deleted, its route shows ORNL's page until a dashboard from the same layout takes it back, and home falls back to the first dashboard. It deletes Events and Dashboard, which only touches its own fresh browser context |
+| `check-custom-pages.mjs` | - | the site opens on the built-in Dashboard; custom dashboards from the Dashboard and Lane View templates render every widget, persist across reload, two maps share a page, video/chart follow the page lane |
 | `check-column-prefs.mjs` | - | an event-table widget's hidden column and dragged width survive a reload, and do not leak into ORNL's `/event-log` |
+
+**Checking a viewer build against a running node without deploying it:** `verify-proxy.mjs` serves
+`web/oscar-viewer/web` (after `npm run build`) on `https://localhost:9443` and passes sign-in, API,
+MQTT and video through to the node's gateway (default `127.0.0.1:443`), so the checks above run on
+the new UI with the node's real lanes and cameras. Usage is in the script's header. Page layouts
+stay in the test browser's own storage, so the node is untouched. A first app load in a fresh
+browser clears saved state once (`oscar_credentials_migrated_v1` in `Store.tsx`), so seed
+`persist:root` after that first load, not before.
 
 ORNL's own `tools/test-live-deployment-regression.sh` is CI-only: it stops apache/nginx and
 deletes `/opt/oscar-ci-regression` on exit. Its Step-3 checks (gateway, ConSys auth, viewer
