@@ -232,3 +232,39 @@ node (still on the 3.11.0-based build).
 **Watch: GitHub System Updater.** Admin-only and manual (Check, then Apply), but it checks
 `github.com/ORNL/oscar` releases. Applying an ORNL release on our node replaces this fork build
 (mobile detectors, widget pages, our fixes). Its source is `oscar.update.githubWebBaseUrl`.
+
+
+## ORNL 3.11.10 → 3.11.11 merge (2026-11-24)
+
+Upstream: parent `3639a48` (1 commit), oscar-viewer `95d7b5dc` (1), osh-core `84d6769f` (1),
+osh-addons `06cb2813` (1), osh-oakridge-modules `acc15804` (1), oscar-video-guides `da296bf0` (1).
+Merged with `--no-ff` into the `ornl-3.11-rollin` branches of osh-core, modules and viewer;
+osh-addons and the video guides move to ORNL's pins.
+
+What ORNL added: Event Log paging keeps up to 64 visited pages (instant Previous/Next, cleared on
+filter/snapshot/adjudication/reconnect changes) and prefetches `page - 1` when stepping backward;
+live MQTT occupancies no longer reset in-flight prefetches; live alarm identity lookups
+(`resolveEventObservationId`) add a `phenomenonTime` window of `[start - 2 s, end + 5 s]` so they
+read only hot PostgreSQL; PostGIS overlay prefilter for boolean `gammaAlarm`/`neutronAlarm` CQL
+(no new indexes); `FederatedObsStore` skips `EmptyObsStore` targets so `offset` reaches
+`OscarTieredObsStore`; a new 5xx gate on `/event-log` sort and offset CQL queries in
+`tools/test-live-deployment-regression.sh`.
+
+Conflicts: none in any submodule; the parent only conflicted on the submodule pins.
+`dist/config/standard/config.json` auto-merged (ORNL's `OSCAR 3.11.11` name plus our Mobile
+Detector form entry). The only file both sides changed is viewer `EventTable.tsx`: ORNL drops the
+`invalidatePrefetch()` call on live MQTT arrivals, away from our widget `fillHeight` hunks.
+`resolveEventObservationId` keeps its signature, so our Event Details widget, event preview and
+event-details page get the bounded lookup unchanged.
+
+Verification: all Java modules and tests compile. osh-core `TestFederatedDatabaseRegistry` (4)
+and OSCAR service (250, 14 skipped) pass. PostGIS tiered store suite against a throwaway
+`oscar-postgis:3.11.10` container (`OSCAR_IT_ARCHIVE_DIR` set): 125 of 126 pass, including ORNL's
+new `postgresAlarmPrefilterNeverRejectsExactCqlMatches`. The one failure,
+`deepOffsetPaginationSkipsArchivedClustersAndDefersDataBlockDecodeWithExactParity`
+(`expected:<16> but was:<0>` on the `.skip(210)` decode count), is ORNL's: it fails identically on
+the 3.11.10 addons pin and on ORNL's own osh-core `84d6769f`, so it is not the merge or our osh-core
+commits. Viewer: typecheck, locale and dependency checks, production build, and all 356 component
+tests pass (Electron; this host has no Chrome).
+**Not yet done:** a release zip, a rehearsal run, or deployment to the live node (still
+`v3.11.10-mjd948.4`).
