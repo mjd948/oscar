@@ -53,6 +53,7 @@ All read the admin password from `PW_FILE`; `OSCAR_BASE` defaults to `https://os
 | `check-map.mjs` | `SHOT` | walker markers present and moving, alarm markers present, the map does not re-centre |
 | `check-alarm-clear.mjs` | `OBS`, `CS` | the alarm popup links to the event, and a Code 9 adjudication clears the marker |
 | `check-video.mjs` | `CPID` (oscar container PID), `LANE`, `RTSP_PORT` | live HLS plays, survives a 45 s RTSP cut in the container's netns, and resumes unattended |
+| `check-view-widgets.mjs` | `RS350_LANE` (Patrol 1), `PORTAL_LANE` (Marshall), `SHOT_DIR` | widgets for ORNL's remaining views: State of Health, Report Generator, Alarm Transfer, Event Lookup, Event Details following a clicked row (without leaving the page), RS-350 spectra |
 | `check-video-fit.mjs` | `LANE` (default Marshall) | the Video Stream widget fits ORNL's player in its frame: no scrolling, video plays |
 | `check-custom-pages.mjs` | - | ORNL's dashboard untouched; custom pages from the Dashboard and Lane View templates render every widget, persist across reload, two maps share a page, video/chart follow the page lane |
 | `check-column-prefs.mjs` | - | an event-table widget's hidden column and dragged width survive a reload, and do not leak into ORNL's `/event-log` |
