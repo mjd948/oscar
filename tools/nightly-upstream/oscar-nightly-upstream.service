@@ -1,0 +1,11 @@
+[Unit]
+Description=OSCAR nightly ORNL catch-up (merge, test, rehearse, deploy, email)
+After=docker.service network-online.target postfix.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/oscar-nightly-upstream
+Environment=HOME=/root
+Nice=10
+TimeoutStartSec=7h

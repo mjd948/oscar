@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the OSCAR nightly ORNL catch-up at 3 am US Eastern
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 America/New_York
+Persistent=false
+Unit=oscar-nightly-upstream.service
+
+[Install]
+WantedBy=timers.target
