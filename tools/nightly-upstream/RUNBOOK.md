@@ -110,8 +110,21 @@ what changed for them, what was done, and whether they need to do anything.
     `oscar-postgis:<ver>` with `OSCAR_STORAGE_PROFILE_VERSION` and `OSCAR_DB_PASSWORD_FILE`,
     plus `OSCAR_IT_ARCHIVE_DIR`. If it can't be started, note that and continue; the rehearsal
     covers the store.
-- **Allowlist** (known ORNL failures, not ours): `deepOffsetPaginationSkipsArchivedClusters…`
-  (expected 16 decodes, got 0). A new upstream-only failure can be allowlisted only if it fails
+- **Allowlist** (known ORNL failures, not ours):
+  - `TestDisposableTieredPostgresIntegration > deepOffsetPaginationSkipsArchivedClusters…`
+    (expected 16 decodes, got 0).
+  - **Root-only failures.** This job runs as root, and root ignores the read-only directories
+    these tests use to simulate a cleanup failure. They were proven identical on a clean ORNL
+    v3.11.15 checkout on 2026-11-25; don't re-prove them:
+    - `TestDuckDbResourcePolicy`: `closeSurfacesOperationDirectoryCleanupFailure`,
+      `concurrentFirstOpensCannotReapNewLiveOperationDirectories`,
+      `concurrentOperationsReceiveDifferentConfinedDirectories`,
+      `smallestRegisteredLimitConstrainsDifferentlyConfiguredStores`,
+      `staleCleanupFailurePreventsSessionAdmissionUntilCleanupCanSucceed`
+    - `TestParquetArchiveReader`: `cursorCloseReportsSpillCleanupFailure`,
+      `decodingFailureKeepsCleanupFailureSuppressed`
+
+    Mention them in one line, not as a finding. A new upstream-only failure can be allowlisted only if it fails
   identically on a clean ORNL checkout of `RELEASE_TAG`. Prove it, and note it in the summary.
 
 ### 4. Build
@@ -132,6 +145,8 @@ live" recipe in memory `oscar-live-node-3-11.md`:
 4. Build the baseline from the live release's zip (`build/distributions/` in
    `/root/osh-oakridge-buildnode`, or rebuild it from the live tag). Check that `acceptance.mjs`
    passes.
+   **Every rehearsal check must set `OSCAR_BASE=https://<dind IP>` explicitly**, e.g.
+   `https://172.17.0.2`. The harness default and the site hostname both reach live.
 5. Upgrade to the new zip with `oscar.sh upgrade`. Then run `acceptance.mjs` (portal lanes:
    "Marshall,AFM Gate,Selfridge,Memorial Ave"; mobile: "Patrol 1", including GPS) and
    `check-event-log-paging.mjs`, and look for new ERROR lines in the logs.
