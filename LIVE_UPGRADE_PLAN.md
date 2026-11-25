@@ -598,3 +598,27 @@ brought it to 59%.
 Rollback: `bash oscar.sh stop` in `/opt/oscar/oscar-3.11.11-mjd948.4`, `docker tag
 oscar:3.11.11-mjd948.3 oscar:3.11.11 && docker tag oscar-postgis:3.11.11-mjd948.3
 oscar-postgis:3.11.11`, then `bash oscar.sh start` in `/opt/oscar/oscar-3.11.11-mjd948.3`.
+
+## Archive query slots leaked by WebID lookups: live deployment (2026-11-25)
+
+Symptom: the dashboard Alarm Table showed "Events could not be loaded" from 00:39 UTC; every
+history query failed with `DuckDB session capacity is busy for operation cold-query after 30
+seconds`. The node allows 2 DuckDB sessions (`duckDbMaximumConcurrentSessions`), and a session is
+returned only when the store's result stream is closed. `WebIdHelper` looked up observation keys
+with `selectKeys(filter).findFirst().get()` and never closed the stream, so each empty WebID match on
+Patrol 1 that reached the cold tier kept a session (leaks at 23:29:57 and 00:39:25, visible as
+leftover `cold-query-<uuid>` dirs in `/var/lib/oscar/duckdb-tmp`). The mjd948.4 re-attach made the
+helper active on Patrol 1. Not related to the second cameras added to each lane the same evening.
+
+Fix: modules `4d4710f2` (try-with-resources, missing match logged as a warning), parent `c6e8ff0`,
+tag `v3.11.11-mjd948.5`, zip SHA-256 `f1d78f4538da2894…`. No dind rehearsal: a module-only change
+of two lookups; rollback is unchanged.
+
+**Live:** `/opt/oscar/oscar-3.11.11-mjd948.5`; replaced images tagged `:3.11.11-mjd948.4` first;
+`oscar.sh upgrade` ran 00:58:53–01:00:42 UTC. Checks: fix class in the running jar, no leftover
+DuckDB session dirs, the alarm-table query returns 200 with all 48 unadjudicated alarms, a 7-day
+per-datastream query returns 200 in 0.09 s, WebID subscribed on Patrol 1, 0 ERROR lines. Disk 69%.
+
+Rollback: `bash oscar.sh stop` in `/opt/oscar/oscar-3.11.11-mjd948.5`, `docker tag
+oscar:3.11.11-mjd948.4 oscar:3.11.11 && docker tag oscar-postgis:3.11.11-mjd948.4
+oscar-postgis:3.11.11`, then `bash oscar.sh start` in `/opt/oscar/oscar-3.11.11-mjd948.4`.
