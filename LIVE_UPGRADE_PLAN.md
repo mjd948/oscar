@@ -622,3 +622,43 @@ per-datastream query returns 200 in 0.09 s, WebID subscribed on Patrol 1, 0 ERRO
 Rollback: `bash oscar.sh stop` in `/opt/oscar/oscar-3.11.11-mjd948.5`, `docker tag
 oscar:3.11.11-mjd948.4 oscar:3.11.11 && docker tag oscar-postgis:3.11.11-mjd948.4
 oscar-postgis:3.11.11`, then `bash oscar.sh start` in `/opt/oscar/oscar-3.11.11-mjd948.4`.
+
+## Update to 3.11.15 (ORNL merge): live deployment (2026-11-25)
+
+ORNL 3.11.12–3.11.15 merged into the rollin branches (parent `1ce8503`, modules `fce581ea`,
+osh-core `618d8389`, viewer `c21dab2`, osh-addons `c206a0a1`, video-guides `36fec49d`). They bring
+Event Log paging/filter fixes, the DuckDB interactive-session reservation, lazy cold-tier streams,
+and ORNL's versions of our upstreamed fixes (sign-in, lane recovery, RS-350 watchdog, liveness, HLS
+retry, WebID slot leak). Conflicts took ORNL's side except where our unmerged Mobile Detector work
+lives: `LaneSystem` keeps the reused occupancy-process member (plus ORNL's "detector already up"
+start for a new process), and `RS350Sensor` keeps `LocationOutput`. The first build lost
+`LocationOutput` (taken from ORNL's side) and the rehearsal caught it: walkers stopped reporting
+GPS, so Patrol 1 went offline and the map froze. Fixed in modules `fce581ea`. Parent tag
+`v3.11.15-mjd948.1`, zip SHA-256 `7a1706dfb8baa8a4…`.
+
+Checks before the build: viewer lint/tsc, 359/359 component tests, `npm run build`; modules lane
+(70), RS-350, D5, session (19) and i18n tests; osh-core registry and HTTP tests.
+
+**Rehearsal** (dind, live config with RPMs on host simulators):
+
+| step | result |
+|---|---|
+| baseline `-mjd948.5` | acceptance passes |
+| upgrade to first 3.11.15 build | Patrol 1 offline, walker frozen (missing `LocationOutput`) → fixed, rebuilt |
+| rollback `stop` 3.11.15, `start` 3.11.11 | 7 s + 58 s, acceptance passes |
+| upgrade to final build | 71 s; acceptance passes incl. Patrol 1 GPS; `check-event-log-paging` passes (one cold-start miss, then 2/2), gateway routes, `archive verify`; OCR on all 4 portal lanes, WebID on Patrol 1 |
+
+Known, not new: one `OccupancyProcessInterface` null-datablock NPE after start (also on live
+3.11.11 at 01:01:11).
+
+**Live:** `/opt/oscar/oscar-3.11.15-mjd948.1`; images tagged `:3.11.11-mjd948.5` first;
+`oscar.sh upgrade` ran 12:29:26–12:32:53 UTC, `/healthz` down 12:30:09–12:32:21 (the site's
+RS-350 at 10.235.20.94:10110 was refusing connections). Checks: four portal lanes online with
+video, `check-event-log-paging` passes, `check-gateway-routes.sh` 29/29, `archive verify`, OCR
+subscribed on all portal lanes. Patrol 1 has been offline since its site simulator stopped at
+01:02:55 UTC (before this upgrade); the lane keeps retrying, and its WebID helper is re-attached
+when the detector comes back.
+
+Rollback: `bash oscar.sh stop` in `/opt/oscar/oscar-3.11.15-mjd948.1`, then `bash oscar.sh start`
+in `/opt/oscar/oscar-3.11.11-mjd948.5` (images `oscar:3.11.11` / `oscar-postgis:3.11.11`, also
+tagged `:3.11.11-mjd948.5`). Older fallback: `/opt/oscar/oscar-3.11.11-mjd948.4`.
