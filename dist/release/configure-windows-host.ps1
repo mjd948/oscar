@@ -514,12 +514,14 @@ function Get-RecommendedWslResourceLimits([double]$TotalHostMemoryGiB, [int]$Log
 }
 
 function Get-WslConfigSectionValues([string]$Content) {
-    $inWsl2 = $false
+    $currentSection = ''
     $hasSection = $false
     $memoryVal = ''
     $processorsVal = ''
     $swapVal = ''
     $networkingModeVal = ''
+    $sparseVhdVal = ''
+    $autoMemoryReclaimVal = ''
     if (-not [string]::IsNullOrWhiteSpace($Content)) {
         foreach ($rawLine in ($Content -split '\r?\n')) {
             $line = $rawLine.Trim()
@@ -527,20 +529,25 @@ function Get-WslConfigSectionValues([string]$Content) {
                 continue
             }
             if ($line -match '^\[([^\]]+)\]$') {
-                $inWsl2 = ([String]::Equals($Matches[1].Trim(), 'wsl2', [StringComparison]::OrdinalIgnoreCase))
-                if ($inWsl2) { $hasSection = $true }
+                $currentSection = $Matches[1].Trim().ToLowerInvariant()
+                if ($currentSection -eq 'wsl2') { $hasSection = $true }
                 continue
             }
-            if ($inWsl2) {
-                $eqIndex = $line.IndexOf('=')
-                if ($eqIndex -gt 0) {
-                    $key = $line.Substring(0, $eqIndex).Trim().ToLowerInvariant()
-                    $val = ($line.Substring($eqIndex + 1) -replace '\s*[#;].*$', '').Trim()
+            $eqIndex = $line.IndexOf('=')
+            if ($eqIndex -gt 0) {
+                $key = $line.Substring(0, $eqIndex).Trim().ToLowerInvariant()
+                $val = ($line.Substring($eqIndex + 1) -replace '\s*[#;].*$', '').Trim()
+                if ($currentSection -eq 'wsl2') {
                     switch ($key) {
                         'memory' { $memoryVal = $val }
                         'processors' { $processorsVal = $val }
                         'swap' { $swapVal = $val }
                         'networkingmode' { $networkingModeVal = $val }
+                    }
+                } elseif ($currentSection -eq 'experimental') {
+                    switch ($key) {
+                        'sparsevhd' { $sparseVhdVal = $val }
+                        'automemoryreclaim' { $autoMemoryReclaimVal = $val }
                     }
                 }
             }
@@ -552,6 +559,8 @@ function Get-WslConfigSectionValues([string]$Content) {
         Processors = $processorsVal
         Swap = $swapVal
         NetworkingMode = $networkingModeVal
+        SparseVhd = $sparseVhdVal
+        AutoMemoryReclaim = $autoMemoryReclaimVal
     }
 }
 
@@ -618,6 +627,16 @@ function Ensure-BoundedWslConfig([bool]$ApplyChanges, [string]$ExplicitPath = ''
         } else {
             ''
         }
+        $effectiveSparseVhd = if ($null -ne $existingParsed -and -not [string]::IsNullOrWhiteSpace($existingParsed.SparseVhd) -and -not $ForceWslConfig) {
+            $existingParsed.SparseVhd.ToLowerInvariant()
+        } else {
+            'true'
+        }
+        $effectiveAutoMemoryReclaim = if ($null -ne $existingParsed -and -not [string]::IsNullOrWhiteSpace($existingParsed.AutoMemoryReclaim) -and -not $ForceWslConfig) {
+            $existingParsed.AutoMemoryReclaim.ToLowerInvariant()
+        } else {
+            'gradual'
+        }
         $wslLines = @(
             '[wsl2]',
             "memory=${effectiveMemoryGb}GB",
@@ -627,6 +646,12 @@ function Ensure-BoundedWslConfig([bool]$ApplyChanges, [string]$ExplicitPath = ''
         if (-not [string]::IsNullOrWhiteSpace($effectiveNetMode)) {
             $wslLines += "networkingMode=$effectiveNetMode"
         }
+        $wslLines += @(
+            '',
+            '[experimental]',
+            "sparseVhd=$effectiveSparseVhd",
+            "autoMemoryReclaim=$effectiveAutoMemoryReclaim"
+        )
         [IO.File]::WriteAllText($targetPath, (($wslLines -join "`r`n") + "`r`n"), $Utf8NoBom)
         $exists = $true
         $wroteFile = $true
@@ -640,20 +665,26 @@ function Ensure-BoundedWslConfig([bool]$ApplyChanges, [string]$ExplicitPath = ''
             Memory = ''
             Processors = ''
             NetworkingMode = ''
+            SparseVhd = ''
+            AutoMemoryReclaim = ''
+            SparseVhdEnabled = $false
             Detail = '.wslconfig is not present; vmmemWSL has no explicit host RAM/CPU reservation'
         }
     }
     $parsed = Get-WslConfigSectionValues ([IO.File]::ReadAllText($targetPath))
     $bounded = (-not [string]::IsNullOrWhiteSpace($parsed.Memory) -and -not [string]::IsNullOrWhiteSpace($parsed.Processors))
+    $sparseEnabled = [String]::Equals($parsed.SparseVhd, 'true', [StringComparison]::OrdinalIgnoreCase)
     $netSuffix = if (-not [string]::IsNullOrWhiteSpace($parsed.NetworkingMode)) { ", networkingMode=$($parsed.NetworkingMode)" } else { '' }
+    $expSuffix = $(if (-not [string]::IsNullOrWhiteSpace($parsed.SparseVhd)) { ", sparseVhd=$($parsed.SparseVhd)" } else { '' }) +
+        $(if (-not [string]::IsNullOrWhiteSpace($parsed.AutoMemoryReclaim)) { ", autoMemoryReclaim=$($parsed.AutoMemoryReclaim)" } else { '' })
     $detail = if ($bounded) {
-        "memory=$($parsed.Memory), processors=$($parsed.Processors)" + $(if (-not [string]::IsNullOrWhiteSpace($parsed.Swap)) { ", swap=$($parsed.Swap)" } else { '' }) + $netSuffix
+        "memory=$($parsed.Memory), processors=$($parsed.Processors)" + $(if (-not [string]::IsNullOrWhiteSpace($parsed.Swap)) { ", swap=$($parsed.Swap)" } else { '' }) + $netSuffix + $expSuffix
     } elseif (-not [string]::IsNullOrWhiteSpace($parsed.Memory)) {
-        ".wslconfig sets memory=$($parsed.Memory) without processors= cap$netSuffix"
+        ".wslconfig sets memory=$($parsed.Memory) without processors= cap$netSuffix$expSuffix"
     } elseif (-not [string]::IsNullOrWhiteSpace($parsed.Processors)) {
-        ".wslconfig sets processors=$($parsed.Processors) without memory= cap$netSuffix"
+        ".wslconfig sets processors=$($parsed.Processors) without memory= cap$netSuffix$expSuffix"
     } else {
-        '.wslconfig has no [wsl2] memory= and processors= limits' + $netSuffix
+        '.wslconfig has no [wsl2] memory= and processors= limits' + $netSuffix + $expSuffix
     }
     return [pscustomobject]@{
         Applicable = $true
@@ -663,6 +694,9 @@ function Ensure-BoundedWslConfig([bool]$ApplyChanges, [string]$ExplicitPath = ''
         Memory = $parsed.Memory
         Processors = $parsed.Processors
         NetworkingMode = $parsed.NetworkingMode
+        SparseVhd = $parsed.SparseVhd
+        AutoMemoryReclaim = $parsed.AutoMemoryReclaim
+        SparseVhdEnabled = $sparseEnabled
         Detail = $detail
     }
 }
@@ -1419,6 +1453,13 @@ function Get-WindowsHostReadinessReport {
     } else {
         & $addCheck 'wsl2-resource-cap' 'WARN' "$($wslCfg.Detail) (run -Mode apply or pass -ForceWslConfig to bound vmmemWSL host RAM/CPU)"
     }
+    if (-not $wslCfg.Applicable) {
+        & $addCheck 'wsl2-sparse-vhd' 'WARN' "WSL 2 sparse VHD reclamation check skipped ($($wslCfg.Detail))"
+    } elseif ($wslCfg.SparseVhdEnabled) {
+        & $addCheck 'wsl2-sparse-vhd' 'PASS' ".wslconfig enables [experimental] sparseVhd=true for automatic ext4.vhdx disk reclamation"
+    } else {
+        & $addCheck 'wsl2-sparse-vhd' 'WARN' ".wslconfig does not set [experimental] sparseVhd=true; Docker ext4.vhdx will not automatically reclaim freed blocks to NTFS (run -Mode apply -ForceWslConfig)"
+    }
 
     $dockerAutoStart = Ensure-DockerDesktopAutoStart $false
     $dockerBootTask = Ensure-DockerDesktopBootStartTask $false
@@ -1439,6 +1480,54 @@ function Get-WindowsHostReadinessReport {
         & $addCheck 'docker-runtime' 'WARN' "Docker Engine reachable, but pre-login S4U boot task, ARSO logon task, or UseResourceSaver=False not yet applied ($autoSummary)"
     } else {
         & $addCheck 'docker-runtime' 'WARN' "Docker Engine not currently reachable ($autoSummary)"
+    }
+
+    $tlsCertPath = if (-not [string]::IsNullOrWhiteSpace($env:OSCAR_GATEWAY_TLS_CERT_FILE)) {
+        $env:OSCAR_GATEWAY_TLS_CERT_FILE
+    } else {
+        Join-Path $PSScriptRoot 'tls\server.crt'
+    }
+    if (Test-Path -LiteralPath $tlsCertPath -PathType Leaf) {
+        try {
+            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($tlsCertPath)
+            $notAfterUtc = $cert.NotAfter.ToUniversalTime()
+            $daysLeft = [int][Math]::Floor(($notAfterUtc - [DateTime]::UtcNow).TotalDays)
+            $expiryLabel = $notAfterUtc.ToString('yyyy-MM-ddTHH:mm:ssZ')
+            if ($notAfterUtc -le [DateTime]::UtcNow) {
+                & $addCheck 'gateway-tls-cert' 'FAIL' "Gateway TLS certificate ($tlsCertPath) EXPIRED on $expiryLabel! Run '.\oscar.bat refresh-tls' immediately."
+            } elseif ($daysLeft -lt 14) {
+                & $addCheck 'gateway-tls-cert' 'FAIL' "Gateway TLS certificate expires in $daysLeft day(s) ($expiryLabel). Run '.\oscar.bat refresh-tls' immediately."
+            } elseif ($daysLeft -lt 60) {
+                & $addCheck 'gateway-tls-cert' 'WARN' "Gateway TLS certificate expires in $daysLeft day(s) ($expiryLabel). Schedule renewal with '.\oscar.bat refresh-tls'."
+            } else {
+                & $addCheck 'gateway-tls-cert' 'PASS' "Gateway TLS certificate valid for $daysLeft day(s) (expires $expiryLabel)"
+            }
+        } catch {
+            & $addCheck 'gateway-tls-cert' 'WARN' "Could not parse gateway TLS certificate ($tlsCertPath): $($_.Exception.Message)"
+        }
+    } else {
+        & $addCheck 'gateway-tls-cert' 'PASS' "Gateway TLS certificate not initialized yet (generated during '.\oscar.bat init')"
+    }
+
+    if ($dockerEngineOk -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'compose.yaml')) -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot '.env'))) {
+        try {
+            $pgCid = ([string](& docker compose --project-name oscar --project-directory $PSScriptRoot --env-file (Join-Path $PSScriptRoot '.env') --file (Join-Path $PSScriptRoot 'compose.yaml') ps --status running --quiet postgres 2>$null)).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($pgCid)) {
+                $xidSql = "SELECT age(datfrozenxid)::text, pg_size_pretty(pg_database_size('gis')) FROM pg_database WHERE datname = 'gis';"
+                $xidLine = ([string]($xidSql | & docker exec -i $pgCid sh -c 'IFS= read -r PGPASSWORD < /run/secrets/postgres_bootstrap_password 2>/dev/null || true; export PGPASSWORD; exec psql -U oscar_bootstrap -d gis -tA' 2>$null)).Trim()
+                if ($xidLine -match '^([0-9]+)\|(.+)$') {
+                    $xidAge = [long]$Matches[1]
+                    $dbSizePretty = $Matches[2].Trim()
+                    if ($xidAge -ge 1200000000L) {
+                        & $addCheck 'postgres-xid-headroom' 'FAIL' "PostgreSQL age(datfrozenxid)=$xidAge (gis=$dbSizePretty) is approaching wraparound! Run manual VACUUM FREEZE immediately."
+                    } elseif ($xidAge -ge 800000000L) {
+                        & $addCheck 'postgres-xid-headroom' 'WARN' "PostgreSQL age(datfrozenxid)=$xidAge (gis=$dbSizePretty) is elevated; verify autovacuum is running."
+                    } else {
+                        & $addCheck 'postgres-xid-headroom' 'PASS' "PostgreSQL XID headroom healthy (age(datfrozenxid)=$xidAge, gis=$dbSizePretty)"
+                    }
+                }
+            }
+        } catch {}
     }
 
     $failCount = @($checks | Where-Object { $_.Status -eq 'FAIL' }).Count

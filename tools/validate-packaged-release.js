@@ -101,6 +101,9 @@ const expected = [
     'documentation/EML_INTEGRATION.md',
     'documentation/QUICKSTART.md', 'documentation/DEPLOYMENT.md',
     'documentation/LIVE_VIDEO.md', 'documentation/OPERATIONAL_VIEWS.md',
+    'documentation/CUSTOM_WIDGET_DASHBOARDS_GUIDE.md',
+    'documentation/VEHICLE_OCR_GUIDE.md',
+    'documentation/IDENTITY_AND_FEDERATION_GUIDE.md',
     'documentation/STATUS_OF_HEALTH.md', 'documentation/TRANSLATION_SYSTEM.md',
     'documentation/STORAGE_ARCHITECTURE.md', 'documentation/DATA_LIFECYCLE.md',
     'documentation/ARCHIVE_FORMAT.md', 'documentation/BACKUP_RESTORE.md',
@@ -251,7 +254,8 @@ if (offline) {
             'emlContextual', 'emlScanContextual', 'emlAnalysis',
             'dailyFile', 'connectionStatus', 'occupancyStatus', 'tamper',
             'occupancy', 'adjudication', 'report', 'siteStatistics', 'nationalSummary',
-            'vehicleOcr',
+            'vehicleOcr', 'location', 'alarm',
+            'KromekDetectorRadiometricsV1Report', 'KromekSerialRadiometricStatusReport',
         ];
         const videoRetentionConfig = oscarServiceConfig?.videoRetentionConfig;
         const dailyJournalConfig = modules.find(module =>
@@ -310,12 +314,28 @@ if (offline) {
         if (archiveConfig?.requireParityReceipt !== true) {
             fail('the standard profile must require a parity receipt before retiring immutable staging children');
         }
+        const storagePressureConfig = oscarServiceConfig?.storagePressureRetentionConfig;
+        if (storagePressureConfig?.earlySecondaryPruneUsagePercent !== 75 ||
+            storagePressureConfig?.triggerUsagePercent !== 85 ||
+            storagePressureConfig?.targetUsagePercent !== 80 ||
+            storagePressureConfig?.ocrCropRetentionDays !== 365) {
+            fail('the standard profile must configure tiered media storage pressure (75% early secondary prune, 85%->80% trigger/target, 365d OCR crop retention)');
+        }
+        if (archiveConfig?.telemetryPressureEnabled !== true ||
+            archiveConfig?.telemetryPressureTriggerUsagePercent !== 85 ||
+            archiveConfig?.telemetryPressureTargetUsagePercent !== 80 ||
+            archiveConfig?.telemetryPressureMinimumRetentionDays !== 365 ||
+            archiveConfig?.telemetryPressureCriticalUsagePercent !== 92 ||
+            archiveConfig?.telemetryPressureCriticalMinimumRetentionDays !== 30 ||
+            archiveConfig?.maximumTelemetryPressureRetirementsPerCycle !== 24) {
+            fail('the standard profile must configure cold-archive RAW_TELEMETRY storage pressure (85%->80% with 365d floor, 92% critical with 30d floor, max 24/cycle)');
+        }
         if (dailyJournalConfig?.sealedJournalRetentionDays !== 30 ||
             dailyJournalConfig?.requireBackupBeforeSealedJournalDeletion !== false) {
             fail('the standard daily journal must retain sealed sources for 30 days and use exact replay without requiring managed backup');
         }
         if (JSON.stringify(archiveConfig?.outputNames) !== JSON.stringify(expectedArchiveOutputs)) {
-            fail('the standard cold tier must remain limited to the twenty-two approved immutable output names');
+            fail('the standard cold tier must remain limited to the twenty-six approved immutable output names');
         }
     }
 }

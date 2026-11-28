@@ -17,12 +17,16 @@ services:
         target: tls_certificate.pem
       - source: tls_private_key
         target: tls_private_key.pem
+    environment:
+      OSCAR_HTTPS_PORT: "${OSCAR_HTTPS_PORT:-443}"
+      NGINX_ENVSUBST_FILTER: "^OSCAR_HTTPS_PORT$"
     volumes:
-      - ./docker/gateway/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./docker/gateway/default.conf:/etc/nginx/templates/default.conf.template:ro
     read_only: true
     tmpfs:
       - /tmp
-      - /var/cache/nginx
+      - /var/cache/nginx:rw,noexec,nosuid,nodev,mode=0755,uid=101,gid=101
+      - /etc/nginx/conf.d:rw,noexec,nosuid,nodev,mode=0755,uid=101,gid=101
     cap_drop:
       - ALL
     security_opt:
@@ -58,12 +62,16 @@ services:
         target: oscar_admin_password
       - source: oscar_db_password
         target: oscar_db_password
+      # Public X.509 certificate only (never private key material) for proactive
+      # gateway TLS expiration monitoring in Status of Health and support bundles.
+      - source: tls_certificate
+        target: tls_certificate.pem
     environment:
       TZ: "${OSCAR_TIMEZONE:-UTC}"
       OSCAR_WEBAUTHN_RP_ID: "${OSCAR_WEBAUTHN_RP_ID:-}"
       INITIAL_ADMIN_PASSWORD_FILE: /run/secrets/oscar_admin_password
       OSCAR_DB_PASSWORD_FILE: /run/secrets/oscar_db_password
-      JAVA_OPTS: "${OSCAR_JAVA_OPTS:--Xms1g -Xmx6g -Xss256k -XX:ReservedCodeCacheSize=512m -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError}"
+      JAVA_OPTS: "${OSCAR_JAVA_OPTS:--Xms1g -Xmx6g -Xss256k -XX:ReservedCodeCacheSize=512m -XX:+UseG1GC -XX:G1PeriodicGCInterval=300000 -XX:+G1PeriodicGCInvokesConcurrent -XX:MinHeapFreeRatio=15 -XX:MaxHeapFreeRatio=35 -XX:+HeapDumpOnOutOfMemoryError}"
     volumes:
       - oscar_state:/var/lib/oscar
       - type: bind
@@ -103,6 +111,10 @@ services:
     image: "oscar-postgis:${OSCAR_VERSION:-local}"
     restart: unless-stopped
     user: postgres
+    # PostgreSQL 16 parallel VACUUM / REINDEX allocates >64 MiB of dynamic
+    # shared memory when maintenance_work_mem=64MB, exhausting Docker's
+    # default 64 MiB /dev/shm mount.
+    shm_size: 256m
     networks:
       - database
     secrets:

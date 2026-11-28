@@ -86,7 +86,8 @@ const outputs = [
     'emlContextual', 'emlScanContextual', 'emlAnalysis',
     'dailyFile', 'connectionStatus', 'occupancyStatus', 'tamper',
     'occupancy', 'adjudication', 'report', 'siteStatistics', 'nationalSummary',
-    'vehicleOcr',
+    'vehicleOcr', 'location', 'alarm',
+    'KromekDetectorRadiometricsV1Report', 'KromekSerialRadiometricStatusReport',
 ];
 const expectedVideoRetention = {
     timeToRetention: 0,
@@ -123,6 +124,17 @@ if (Object.entries(expectedVideoRetention).some(([field, expected]) =>
     archive?.rollbackGraceDays !== 3 ||
     archive?.deleteHotAfterArchive !== true ||
     archive?.requireParityReceipt !== true ||
+    archive?.telemetryPressureEnabled !== true ||
+    archive?.telemetryPressureTriggerUsagePercent !== 85 ||
+    archive?.telemetryPressureTargetUsagePercent !== 80 ||
+    archive?.telemetryPressureMinimumRetentionDays !== 365 ||
+    archive?.telemetryPressureCriticalUsagePercent !== 92 ||
+    archive?.telemetryPressureCriticalMinimumRetentionDays !== 30 ||
+    archive?.maximumTelemetryPressureRetirementsPerCycle !== 24 ||
+    service?.storagePressureRetentionConfig?.earlySecondaryPruneUsagePercent !== 75 ||
+    service?.storagePressureRetentionConfig?.triggerUsagePercent !== 85 ||
+    service?.storagePressureRetentionConfig?.targetUsagePercent !== 80 ||
+    service?.storagePressureRetentionConfig?.ocrCropRetentionDays !== 365 ||
     dailyJournal?.sealedJournalRetentionDays !== 30 ||
     dailyJournal?.requireBackupBeforeSealedJournalDeletion !== false ||
     JSON.stringify(archive?.outputNames) !== JSON.stringify(outputs)) {
@@ -1013,6 +1025,25 @@ assert_contains '^NATIVE_TMP_DIR=/run/oscar-native$' "$oscar_entrypoint"
 assert_contains '^READY_FILE=/tmp/oscar-ready$' "$oscar_entrypoint"
 assert_contains 'rm -f -- "\$\{READY_FILE\}" "\$\{READY_FILE\}\.tmp"' "$oscar_entrypoint"
 assert_contains 'test -f /tmp/oscar-ready && curl --silent --show-error' "$compose_file"
+for g1_uncommit_flag in \
+    '-XX:G1PeriodicGCInterval=300000' \
+    '-XX:+G1PeriodicGCInvokesConcurrent' \
+    '-XX:MinHeapFreeRatio=15' \
+    '-XX:MaxHeapFreeRatio=35'; do
+    grep -Fq -- "$g1_uncommit_flag" <<<"$oscar_service_block" || {
+        printf 'Compose oscar service is missing G1GC idle-heap uncommit flag %s.\n' "$g1_uncommit_flag" >&2
+        exit 1
+    }
+    grep -Fq -- "$g1_uncommit_flag" "$environment_template" || {
+        printf 'Environment template is missing G1GC idle-heap uncommit flag %s.\n' "$g1_uncommit_flag" >&2
+        exit 1
+    }
+done
+postgres_service_block=$(sed -n '/^  postgres:$/,/^volumes:$/p' "$compose_file")
+[[ $(grep -Fxc '    shm_size: 256m' <<<"$postgres_service_block") == 1 ]] || {
+    printf 'Compose postgres service must configure shm_size: 256m so PostgreSQL 16 parallel maintenance cannot exhaust default 64 MiB /dev/shm.\n' >&2
+    exit 1
+}
 assert_contains 'if \[ -n "\$\{_JAVA_OPTIONS:-\}" \]' "$oscar_entrypoint"
 assert_contains 'is_tmpfs_mount /tmp' "$oscar_entrypoint"
 assert_contains 'mount_has_option /tmp noexec' "$oscar_entrypoint"
@@ -4680,5 +4711,208 @@ grep -Fq '127.0.0.1,11602' "$test_root/proxied-lanes.csv" || {
     printf 'oscar-rpm-proxy.sh configure did not emit 20-column proxied OSCAR CSV.\n' >&2
     exit 1
 }
+
+# Verify oscar-sandbox.sh TTL auto-shutdown never kills itself inside oscar-sandbox-expiry.service
+# and that poll-bridge enforces expired TTLs via both sandbox.meta and container env fallback.
+sandbox_sh="$repo_root/dist/release/oscar-sandbox.sh"
+sb_test_root="$test_root/sandbox-ttl"
+sb_bin="$sb_test_root/bin"
+sb_runtime="$sb_test_root/runtime"
+sb_ctrl="$sb_test_root/ctrl"
+sb_state="$sb_test_root/running.flag"
+sb_docker_log="$sb_test_root/docker.log"
+sb_systemctl_log="$sb_test_root/systemctl.log"
+mkdir -p "$sb_bin" "$sb_runtime" "$sb_ctrl"
+
+cat >"$sb_bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SB_SYSTEMCTL_LOG"
+exit 0
+EOF
+chmod +x "$sb_bin/systemctl"
+
+cat >"$sb_bin/docker" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SB_DOCKER_LOG"
+case "${1:-}" in
+    ps)
+        if [[ -f "$SB_RUNNING_FLAG" ]]; then
+            printf 'mock-sandbox-cid\n'
+        fi
+        exit 0
+        ;;
+    inspect)
+        printf 'OSCAR_SANDBOX_STARTED_EPOCH_SEC=1700000000\nOSCAR_SANDBOX_TTL_MINUTES=120\n'
+        exit 0
+        ;;
+    compose)
+        if [[ " $* " == *" down "* ]]; then
+            rm -f -- "$SB_RUNNING_FLAG"
+        fi
+        exit 0
+        ;;
+    rm)
+        rm -f -- "$SB_RUNNING_FLAG"
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+chmod +x "$sb_bin/docker"
+
+# Case 1: Inside oscar-sandbox-expiry.service (OSCAR_SANDBOX_EXPIRY_TRIGGERED=1), stop must NOT
+# call systemctl stop oscar-sandbox-expiry.service (which would SIGTERM itself mid-teardown).
+touch "$sb_state"
+mkdir -p "$sb_runtime"
+printf 'HTTPS_PORT=8444\nTTL_MINUTES=120\nSTARTED_EPOCH=1700000000\nEXPIRES_AT=2023-11-15T00:13:20Z\n' >"$sb_runtime/sandbox.meta"
+: >"$sb_docker_log"
+: >"$sb_systemctl_log"
+PATH="$sb_bin:$PATH" \
+SB_RUNNING_FLAG="$sb_state" \
+SB_DOCKER_LOG="$sb_docker_log" \
+SB_SYSTEMCTL_LOG="$sb_systemctl_log" \
+OSCAR_SANDBOX_ALLOW_NONROOT=1 \
+OSCAR_SANDBOX_EXPIRY_TRIGGERED=1 \
+OSCAR_SANDBOX_RUNTIME_DIR="$sb_runtime" \
+OSCAR_SANDBOX_CONTROL_DIR="$sb_ctrl" \
+    bash "$sandbox_sh" stop >/dev/null
+! grep -Fq 'stop oscar-sandbox-expiry.service' "$sb_systemctl_log" || {
+    printf 'oscar-sandbox.sh stop attempted to stop oscar-sandbox-expiry.service from inside itself.\n' >&2
+    exit 1
+}
+grep -Fq 'compose --project-name oscar-sandbox' "$sb_docker_log" &&
+[[ ! -f "$sb_state" && ! -d "$sb_runtime" ]] &&
+grep -Fq '"sandboxRunning": false' "$sb_ctrl/status.json" || {
+    printf 'oscar-sandbox.sh expiry-triggered stop did not complete teardown.\n' >&2
+    exit 1
+}
+
+# Case 2: Manual stop outside the expiry unit must disarm pending oscar-sandbox-expiry timer.
+: >"$sb_systemctl_log"
+PATH="$sb_bin:$PATH" \
+SB_RUNNING_FLAG="$sb_state" \
+SB_DOCKER_LOG="$sb_docker_log" \
+SB_SYSTEMCTL_LOG="$sb_systemctl_log" \
+OSCAR_SANDBOX_ALLOW_NONROOT=1 \
+OSCAR_SANDBOX_RUNTIME_DIR="$sb_runtime" \
+OSCAR_SANDBOX_CONTROL_DIR="$sb_ctrl" \
+    bash "$sandbox_sh" stop >/dev/null
+grep -Fq 'stop oscar-sandbox-expiry.timer oscar-sandbox-expiry.service' "$sb_systemctl_log" || {
+    printf 'Manual oscar-sandbox.sh stop did not cancel pending expiry timer.\n' >&2
+    exit 1
+}
+
+# Case 3: poll-bridge preserves an active non-expired sandbox and stops it once TTL expires.
+touch "$sb_state"
+mkdir -p "$sb_runtime"
+printf 'HTTPS_PORT=8444\nTTL_MINUTES=120\nSTARTED_EPOCH=1700000000\nEXPIRES_AT=2023-11-15T00:13:20Z\n' >"$sb_runtime/sandbox.meta"
+: >"$sb_docker_log"
+PATH="$sb_bin:$PATH" \
+SB_RUNNING_FLAG="$sb_state" \
+SB_DOCKER_LOG="$sb_docker_log" \
+SB_SYSTEMCTL_LOG="$sb_systemctl_log" \
+OSCAR_SANDBOX_ALLOW_NONROOT=1 \
+OSCAR_SANDBOX_NOW_EPOCH=1700003600 \
+OSCAR_SANDBOX_RUNTIME_DIR="$sb_runtime" \
+OSCAR_SANDBOX_CONTROL_DIR="$sb_ctrl" \
+    bash "$sandbox_sh" poll-bridge >/dev/null
+[[ -f "$sb_state" ]] && grep -Fq '"sandboxRunning": true' "$sb_ctrl/status.json" || {
+    printf 'poll-bridge stopped a non-expired sandbox prematurely.\n' >&2
+    exit 1
+}
+
+PATH="$sb_bin:$PATH" \
+SB_RUNNING_FLAG="$sb_state" \
+SB_DOCKER_LOG="$sb_docker_log" \
+SB_SYSTEMCTL_LOG="$sb_systemctl_log" \
+OSCAR_SANDBOX_ALLOW_NONROOT=1 \
+OSCAR_SANDBOX_NOW_EPOCH=1700007200 \
+OSCAR_SANDBOX_RUNTIME_DIR="$sb_runtime" \
+OSCAR_SANDBOX_CONTROL_DIR="$sb_ctrl" \
+    bash "$sandbox_sh" poll-bridge >/dev/null
+[[ ! -f "$sb_state" && ! -d "$sb_runtime" ]] && grep -Fq '"sandboxRunning": false' "$sb_ctrl/status.json" || {
+    printf 'poll-bridge failed to stop an expired sandbox from sandbox.meta.\n' >&2
+    exit 1
+}
+
+# Case 4: poll-bridge falls back to container environment variables when sandbox.meta is missing.
+touch "$sb_state"
+rm -rf -- "$sb_runtime"
+PATH="$sb_bin:$PATH" \
+SB_RUNNING_FLAG="$sb_state" \
+SB_DOCKER_LOG="$sb_docker_log" \
+SB_SYSTEMCTL_LOG="$sb_systemctl_log" \
+OSCAR_SANDBOX_ALLOW_NONROOT=1 \
+OSCAR_SANDBOX_NOW_EPOCH=1700007300 \
+OSCAR_SANDBOX_RUNTIME_DIR="$sb_runtime" \
+OSCAR_SANDBOX_CONTROL_DIR="$sb_ctrl" \
+    bash "$sandbox_sh" poll-bridge >/dev/null
+[[ ! -f "$sb_state" ]] && grep -Fq '"sandboxRunning": false' "$sb_ctrl/status.json" || {
+    printf 'poll-bridge failed to stop an expired sandbox via container env fallback.\n' >&2
+    exit 1
+}
+
+# Verify ten-year scale hardening: gateway TLS expiry host-check thresholds, compose public-cert-only mount,
+# and adaptive USB backup PostgreSQL interval / backward-compatible snapshot resolver.
+tls_test_dir="$test_root/tls-check"
+mkdir -p "$tls_test_dir/etc/systemd/system" "$tls_test_dir/etc/ssh/sshd_config.d" "$tls_test_dir/etc/chrony/conf.d"
+openssl req -x509 -newkey rsa:2048 -nodes -days 180 -subj "/CN=oscar-ok.local" \
+    -keyout "$tls_test_dir/ok.key" -out "$tls_test_dir/ok.crt" >/dev/null 2>&1
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=oscar-warn.local" \
+    -keyout "$tls_test_dir/warn.key" -out "$tls_test_dir/warn.crt" >/dev/null 2>&1
+openssl req -x509 -newkey rsa:2048 -nodes -days 5 -subj "/CN=oscar-crit.local" \
+    -keyout "$tls_test_dir/crit.key" -out "$tls_test_dir/crit.crt" >/dev/null 2>&1
+
+tls_ok_json=$(OSCAR_UBUNTU_HOST_TEST_ROOT="$tls_test_dir" OSCAR_GATEWAY_TLS_CERT_FILE="$tls_test_dir/ok.crt" \
+    bash "$repo_root/dist/release/configure-ubuntu-host.sh" host-check --json --allow-dhcp || true)
+grep -Fq '"id": "gateway-tls-cert", "status": "PASS"' <<<"$tls_ok_json" || {
+    printf 'Expected PASS for 180-day gateway TLS certificate:\n%s\n' "$tls_ok_json" >&2
+    exit 1
+}
+tls_warn_json=$(OSCAR_UBUNTU_HOST_TEST_ROOT="$tls_test_dir" OSCAR_GATEWAY_TLS_CERT_FILE="$tls_test_dir/warn.crt" \
+    bash "$repo_root/dist/release/configure-ubuntu-host.sh" host-check --json --allow-dhcp || true)
+grep -Fq '"id": "gateway-tls-cert", "status": "WARN"' <<<"$tls_warn_json" || {
+    printf 'Expected WARN for 30-day gateway TLS certificate:\n%s\n' "$tls_warn_json" >&2
+    exit 1
+}
+tls_crit_json=$(OSCAR_UBUNTU_HOST_TEST_ROOT="$tls_test_dir" OSCAR_GATEWAY_TLS_CERT_FILE="$tls_test_dir/crit.crt" \
+    bash "$repo_root/dist/release/configure-ubuntu-host.sh" host-check --json --allow-dhcp || true)
+grep -Fq '"id": "gateway-tls-cert", "status": "FAIL"' <<<"$tls_crit_json" || {
+    printf 'Expected FAIL for 5-day gateway TLS certificate:\n%s\n' "$tls_crit_json" >&2
+    exit 1
+}
+
+# Verify compose.yaml mounts ONLY the public tls_certificate secret (never tls_private_key) into the oscar service.
+python3 - "$repo_root/dist/release/compose.yaml" <<'PY'
+import sys, pathlib, re
+txt = pathlib.Path(sys.argv[1]).read_text()
+m = re.search(r'^  oscar:\n(.*?)(?=^  postgres:\n)', txt, flags=re.S | re.M)
+assert m, "Could not locate oscar service block in compose.yaml"
+oscar_block = m.group(1)
+assert "source: tls_certificate" in oscar_block and "target: tls_certificate.pem" in oscar_block, \
+    "oscar service must mount public tls_certificate secret for expiry monitoring"
+assert "tls_private_key" not in oscar_block, \
+    "oscar service MUST NEVER mount tls_private_key"
+PY
+
+# Verify adaptive PostgreSQL base-backup cadence and backward-compatible snapshot resolver in oscar-usb-backup.sh.
+bash -eu -c '
+    eval "$(awk "/^resolve_snapshot_pg_tar_rel\\(\\)/,/^}/" "$1")"
+    eval "$(awk "/^adaptive_pg_basebackup_interval_minutes\\(\\)/,/^}/" "$1")"
+    fail() { echo "$*" >&2; exit 1; }
+    [[ $(adaptive_pg_basebackup_interval_minutes 500000000) == 15 ]]
+    [[ $(adaptive_pg_basebackup_interval_minutes 2147483648) == 60 ]]
+    [[ $(adaptive_pg_basebackup_interval_minutes 5368709120) == 180 ]]
+    [[ $(OSCAR_USB_PG_BASEBACKUP_INTERVAL_MINUTES=45 adaptive_pg_basebackup_interval_minutes 500000000) == 45 ]]
+    [[ $(OSCAR_USB_PG_BASEBACKUP_INTERVAL_MINUTES=0 adaptive_pg_basebackup_interval_minutes 5368709120) == 0 ]]
+    mkdir -p "$2/snapshots/s1" "$2/snapshots/s2" "$2/packs/postgres"
+    : >"$2/snapshots/s1/postgres.tar"
+    : >"$2/packs/postgres/pg-s2.tar"
+    printf "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  packs/postgres/pg-s2.tar\n" >"$2/snapshots/s2/pack-index.txt"
+    [[ $(resolve_snapshot_pg_tar_rel "$2" s1) == "snapshots/s1/postgres.tar" ]]
+    [[ $(resolve_snapshot_pg_tar_rel "$2" s2) == "packs/postgres/pg-s2.tar" ]]
+' _ "$repo_root/dist/release/oscar-usb-backup.sh" "$test_root/usb-pg-resolver"
 
 printf 'OSCAR storage script safety tests passed.\n'

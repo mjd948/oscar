@@ -100,6 +100,7 @@ if (standardOscar.length !== 1 || standardDatabases.length !== 1 || standardDail
     throw new Error('dist/config/standard/config.json: expected one OSCAR service, one system database, and one daily-file journal.');
 }
 const videoRetention = standardOscar[0].videoRetentionConfig;
+const storagePressure = standardOscar[0].storagePressureRetentionConfig;
 const archive = standardDatabases[0].dbConfig?.archive;
 const dailyJournal = standardDailyJournals[0];
 const expectedStorageDefaults = {
@@ -120,6 +121,10 @@ const expectedStorageDefaults = {
     'videoRetentionConfig.secondaryFrameRetentionDays': [videoRetention?.secondaryFrameRetentionDays, 30],
     'videoRetentionConfig.maintenanceWorkLimit': [videoRetention?.maintenanceWorkLimit, 200],
     'videoRetentionConfig.metadataReclamationWorkLimit': [videoRetention?.metadataReclamationWorkLimit, 200],
+    'storagePressureRetentionConfig.earlySecondaryPruneUsagePercent': [storagePressure?.earlySecondaryPruneUsagePercent, 75],
+    'storagePressureRetentionConfig.triggerUsagePercent': [storagePressure?.triggerUsagePercent, 85],
+    'storagePressureRetentionConfig.targetUsagePercent': [storagePressure?.targetUsagePercent, 80],
+    'storagePressureRetentionConfig.ocrCropRetentionDays': [storagePressure?.ocrCropRetentionDays, 365],
     'oscarService.delegateObservationLifecycleToDatabase': [standardOscar[0]?.delegateObservationLifecycleToDatabase, true],
     'oscarService.connectionStatusRetentionHours': [standardOscar[0]?.connectionStatusRetentionHours, 1],
     'archive.enabled': [archive?.enabled, true],
@@ -137,6 +142,13 @@ const expectedStorageDefaults = {
     'archive.rollbackGraceDays': [archive?.rollbackGraceDays, 3],
     'archive.deleteHotAfterArchive': [archive?.deleteHotAfterArchive, true],
     'archive.requireParityReceipt': [archive?.requireParityReceipt, true],
+    'archive.telemetryPressureEnabled': [archive?.telemetryPressureEnabled, true],
+    'archive.telemetryPressureTriggerUsagePercent': [archive?.telemetryPressureTriggerUsagePercent, 85],
+    'archive.telemetryPressureTargetUsagePercent': [archive?.telemetryPressureTargetUsagePercent, 80],
+    'archive.telemetryPressureMinimumRetentionDays': [archive?.telemetryPressureMinimumRetentionDays, 365],
+    'archive.telemetryPressureCriticalUsagePercent': [archive?.telemetryPressureCriticalUsagePercent, 92],
+    'archive.telemetryPressureCriticalMinimumRetentionDays': [archive?.telemetryPressureCriticalMinimumRetentionDays, 30],
+    'archive.maximumTelemetryPressureRetirementsPerCycle': [archive?.maximumTelemetryPressureRetirementsPerCycle, 24],
     'dailyJournal.sealedJournalRetentionDays': [dailyJournal?.sealedJournalRetentionDays, 30],
     'dailyJournal.requireBackupBeforeSealedJournalDeletion': [dailyJournal?.requireBackupBeforeSealedJournalDeletion, false],
 };
@@ -151,10 +163,11 @@ const expectedArchiveOutputs = [
     'emlContextual', 'emlScanContextual', 'emlAnalysis',
     'dailyFile', 'connectionStatus', 'occupancyStatus', 'tamper',
     'occupancy', 'adjudication', 'report', 'siteStatistics', 'nationalSummary',
-    'vehicleOcr',
+    'vehicleOcr', 'location', 'alarm',
+    'KromekDetectorRadiometricsV1Report', 'KromekSerialRadiometricStatusReport',
 ];
 if (JSON.stringify(archive?.outputNames) !== JSON.stringify(expectedArchiveOutputs)) {
-    throw new Error('dist/config/standard/config.json: expected the approved twenty-two-output immutable archive allowlist.');
+    throw new Error('dist/config/standard/config.json: expected the approved twenty-six-output immutable archive allowlist.');
 }
 requireMatch('dist/release/.env.example', /^OSCAR_VERSION=(.+)$/m, version, 'OSCAR_VERSION');
 requireMatch(
@@ -372,6 +385,9 @@ for (const relativePath of [
     'docs/TRAINING_SANDBOX_GUIDE.md',
     'docs/LANE_WEBRELAY_GUIDE.md',
     'docs/RPM_EDGE_PROXY_GUIDE.md',
+    'docs/CUSTOM_WIDGET_DASHBOARDS_GUIDE.md',
+    'docs/VEHICLE_OCR_GUIDE.md',
+    'docs/IDENTITY_AND_FEDERATION_GUIDE.md',
     'include/osh-oakridge-modules/README.md',
     'include/osh-oakridge-modules/docs/oscar-operator-manual/README.md',
     'include/osh-oakridge-modules/services/sensorhub-service-oscar/src/main/resources/README.md',

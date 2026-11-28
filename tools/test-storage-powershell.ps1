@@ -206,6 +206,18 @@ try {
     Assert-True (([Text.RegularExpressions.Regex]::Matches($compose, [Text.RegularExpressions.Regex]::Escape($nativeTmpfs))).Count -eq 1) 'The executable native tmpfs must be scoped to OSCAR only.'
     Assert-True ($oscarService.Contains('test -f /tmp/oscar-ready && curl --silent --show-error')) `
         'Compose health does not require application readiness before HTTP availability.'
+    foreach ($g1Flag in @(
+        '-XX:G1PeriodicGCInterval=300000',
+        '-XX:+G1PeriodicGCInvokesConcurrent',
+        '-XX:MinHeapFreeRatio=15',
+        '-XX:MaxHeapFreeRatio=35')) {
+        Assert-True ($oscarService.Contains($g1Flag)) "Compose oscar service is missing G1GC idle-heap uncommit flag: $g1Flag"
+    }
+    $postgresService = [Text.RegularExpressions.Regex]::Match(
+        $compose, '^  postgres:\r?\n.*?(?=^volumes:)',
+        [Text.RegularExpressions.RegexOptions]::Multiline -bor [Text.RegularExpressions.RegexOptions]::Singleline).Value
+    Assert-True ($postgresService.Contains('    shm_size: 256m')) `
+        'Compose postgres service must configure shm_size: 256m so PostgreSQL 16 parallel maintenance cannot exhaust default 64 MiB /dev/shm.'
 
     $dockerfile = [IO.File]::ReadAllText($oscarDockerfile)
     Assert-True ($dockerfile.Contains('/var/lib/oscar /run/oscar-native')) 'The OSCAR image is missing its private native-tmpfs mount point.'
@@ -1490,11 +1502,12 @@ SELECT 'single quote '' and $dollar';
     $wslFixtureDir = Join-Path $temporaryRoot 'wsl-profile'
     $wslFixturePath = Join-Path $wslFixtureDir '.wslconfig'
     $createdWslCfg = Ensure-BoundedWslConfig $true $wslFixturePath
-    Assert-True ($createdWslCfg.Present -and $createdWslCfg.Bounded -and $createdWslCfg.WroteFile) `
-        "Ensure-BoundedWslConfig did not create a bounded .wslconfig when absent: $($createdWslCfg.Detail)"
+    Assert-True ($createdWslCfg.Present -and $createdWslCfg.Bounded -and $createdWslCfg.WroteFile -and
+        $createdWslCfg.SparseVhdEnabled -and $createdWslCfg.AutoMemoryReclaim -ceq 'gradual') `
+        "Ensure-BoundedWslConfig did not create a bounded .wslconfig with sparseVhd=true when absent: $($createdWslCfg.Detail)"
     [IO.File]::WriteAllText($wslFixturePath, "[wsl2]`r`nmemory=10GB`r`nprocessors=5`r`n", [Text.UTF8Encoding]::new($false))
     $preservedWslCfg = Ensure-BoundedWslConfig $true $wslFixturePath
-    Assert-True ($preservedWslCfg.Bounded -and -not $preservedWslCfg.WroteFile -and
+    Assert-True ($preservedWslCfg.Bounded -and -not $preservedWslCfg.WroteFile -and -not $preservedWslCfg.SparseVhdEnabled -and
         $preservedWslCfg.Memory -ceq '10GB' -and $preservedWslCfg.Processors -ceq '5') `
         'Ensure-BoundedWslConfig overwrote an existing operator .wslconfig without -ForceWslConfig.'
     [IO.File]::WriteAllText($wslFixturePath, "[wsl2]`r`nnetworkingMode=nat`r`n", [Text.UTF8Encoding]::new($false))
@@ -1504,8 +1517,8 @@ SELECT 'single quote '' and $dollar';
     $ForceWslConfig = $true
     try {
         $forcedWslCfg = Ensure-BoundedWslConfig $true $wslFixturePath
-        Assert-True ($forcedWslCfg.Bounded -and $forcedWslCfg.WroteFile) `
-            'Ensure-BoundedWslConfig did not rewrite an unbounded .wslconfig under -ForceWslConfig.'
+        Assert-True ($forcedWslCfg.Bounded -and $forcedWslCfg.WroteFile -and $forcedWslCfg.SparseVhdEnabled) `
+            'Ensure-BoundedWslConfig did not rewrite an unbounded .wslconfig with sparseVhd=true under -ForceWslConfig.'
     } finally {
         $ForceWslConfig = $false
     }
@@ -1694,6 +1707,108 @@ public static class OscarLongPathTestHelper {
     $expectedDk = [Convert]::ToBase64String($verifyKdf.GetBytes(16))
     $verifyKdf.Dispose()
     Assert-True ($pbkdf2Parts[4] -ceq $expectedDk) 'PowerShell 5.1 PBKDF2 derived key did not match expected RFC2898 SHA1 key.'
+
+    # Verify Training Sandbox TTL auto-shutdown hardening in oscar-sandbox.ps1
+    $sandboxSource = [IO.File]::ReadAllText($sandboxScript)
+    foreach ($requiredSandboxToken in @(
+        'function Get-SandboxExpiryEpoch',
+        'function Invoke-EnforceSandboxExpiry',
+        'Invoke-EnforceSandboxExpiry',
+        '-AllowStartIfOnBatteries',
+        '-DontStopIfGoingOnBatteries',
+        '-StartWhenAvailable',
+        '-RunLevel Highest')) {
+        Assert-True ($sandboxSource.Contains($requiredSandboxToken)) `
+            "oscar-sandbox.ps1 is missing required TTL auto-shutdown safeguard: $requiredSandboxToken"
+    }
+
+    # Verify Autoinstall USB Creator printable Technician Handover One-Sheet PDF under PS 5.1
+    $pdfTestDir = Join-Path $temporaryRoot 'onesheet-pdf-test'
+    $pdfSeedDir = Join-Path $pdfTestDir 'seed'
+    New-Item -ItemType Directory -Path $pdfSeedDir -Force | Out-Null
+    $pdfLinuxPwFile = Join-Path $pdfTestDir 'linux-pw.txt'
+    $pdfLuksFile = Join-Path $pdfTestDir 'luks.txt'
+    $pdfWebPwFile = Join-Path $pdfTestDir 'web-pw.txt'
+    $pdfSshKeyFile = Join-Path $pdfTestDir 'id_ed25519.pub'
+    $pdfLanesFile = Join-Path $pdfTestDir 'lanes.csv'
+    $pdfIsoFile = Join-Path $pdfTestDir 'ubuntu-24.04.5-live-server-amd64.iso'
+    $pdfBundleFile = Join-Path $pdfTestDir 'oscar-3.12.0-ubuntu-x86_64-offline-full.zip'
+    $pdfOutFile = Join-Path $pdfTestDir 'handover-onesheet.pdf'
+    [IO.File]::WriteAllText($pdfLinuxPwFile, "P@ss(word)\#2026!Lin`n", $Utf8NoBom)
+    [IO.File]::WriteAllText($pdfLuksFile, "Luks(Disk)\Passphrase!2026`n", $Utf8NoBom)
+    [IO.File]::WriteAllText($pdfWebPwFile, "OscarWeb(Admin)\#2026!`n", $Utf8NoBom)
+    [IO.File]::WriteAllText($pdfSshKeyFile, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestWinOneSheet tech@portal`n", $Utf8NoBom)
+    [IO.File]::WriteAllText($pdfLanesFile, "Name,UniqueID,AutoStart`nLane 01,lane-01,true`n", $Utf8NoBom)
+    [IO.File]::WriteAllText((Join-Path $pdfSeedDir 'backup-key.txt'), "BackupVault(Key)\2026!Sec`n", $Utf8NoBom)
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'dist\release\ubuntu\site-network.example.env') -Destination (Join-Path $pdfSeedDir 'site-network.env') -Force
+    [IO.File]::WriteAllText($pdfIsoFile, "mock-iso`n", $Utf8NoBom)
+    [IO.File]::WriteAllText($pdfBundleFile, "mock-bundle`n", $Utf8NoBom)
+    $expectedWinSha = (Get-FileHash -LiteralPath $pdfBundleFile -Algorithm SHA256).Hash.ToLowerInvariant()
+
+    & (Join-Path $PSHOME 'powershell.exe') -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+        -File $autoinstallUsbScript `
+        -IsoPath $pdfIsoFile `
+        -OfflineBundlePath $pdfBundleFile `
+        -Hostname 'portal-gate-01' `
+        -Username 'siteadmin' `
+        -PasswordFile $pdfLinuxPwFile `
+        -LuksPassphraseFile $pdfLuksFile `
+        -RequireSudoPassword `
+        -SshKeyFile $pdfSshKeyFile `
+        -SshKeysOnly `
+        -OscarAdminPasswordFile $pdfWebPwFile `
+        -LanesFile $pdfLanesFile `
+        -AutoInitOscar `
+        -SeedDirectory $pdfSeedDir `
+        -RenderOneSheetPdfOnly $pdfOutFile | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) "create-autoinstall-usb.ps1 -RenderOneSheetPdfOnly failed with exit code $LASTEXITCODE."
+    Assert-True (Test-Path -LiteralPath $pdfOutFile -PathType Leaf) 'Technician Handover One-Sheet PDF was not created.'
+    $pdfBytes = [IO.File]::ReadAllBytes($pdfOutFile)
+    $pdfLatin1 = [Text.Encoding]::GetEncoding(28591).GetString($pdfBytes)
+    Assert-True ($pdfLatin1.StartsWith("%PDF-1.4`n")) 'Generated Windows One-Sheet PDF is missing %PDF-1.4 header.'
+    Assert-True ($pdfLatin1.Contains("xref`n") -and $pdfLatin1.Contains("startxref`n") -and $pdfLatin1.EndsWith("%%EOF`n")) 'Generated Windows One-Sheet PDF is missing xref/EOF structure.'
+    foreach ($expectedPdfToken in @(
+        'TECHNICIAN ONE-SHEET',
+        'portal-gate-01',
+        'siteadmin',
+        'P@ss\(word\)\\#2026!Lin',
+        'Luks\(Disk\)\\Passphrase!2026',
+        'OscarWeb\(Admin\)\\#2026!',
+        'BackupVault\(Key\)\\2026!Sec',
+        '198.51.100.10/24',
+        '203.0.113.10/24',
+        $expectedWinSha,
+        'lanes.csv',
+        'NEVER written to the USB drive',
+        'FIELD DEPLOYMENT SIGN-OFF')) {
+        Assert-True ($pdfLatin1.Contains($expectedPdfToken)) "Generated Windows One-Sheet PDF is missing expected token: $expectedPdfToken"
+    }
+
+    # Verify ten-year scale hardening in compose.yaml and Windows USB backup / host-check scripts.
+    $composeText = [IO.File]::ReadAllText($composeFile)
+    $oscarSvcMatch = [regex]::Match($composeText, '(?ms)^  oscar:\r?\n(.*?)(?=^  postgres:\r?\n)')
+    Assert-True $oscarSvcMatch.Success 'Could not locate oscar service block in compose.yaml.'
+    $oscarSvcBlock = $oscarSvcMatch.Groups[1].Value
+    Assert-True ($oscarSvcBlock.Contains('source: tls_certificate') -and $oscarSvcBlock.Contains('target: tls_certificate.pem')) 'compose.yaml oscar service must mount public tls_certificate secret.'
+    Assert-True (-not $oscarSvcBlock.Contains('tls_private_key')) 'compose.yaml oscar service must NEVER mount tls_private_key.'
+
+    $usbPsText = [IO.File]::ReadAllText($usbBackupScript)
+    foreach ($expectedToken in @(
+        'sync -IfAttached -Scheduled',
+        'Resolve-SnapshotPostgresTarPath',
+        'Get-AdaptivePgBaseBackupIntervalMinutes',
+        'packs/postgres/pg-',
+        '.last-full-scan-epoch',
+        '"stateScanMode":')) {
+        Assert-True ($usbPsText.Contains($expectedToken)) "oscar-usb-backup.ps1 is missing expected ten-year hardening token: $expectedToken"
+    }
+
+    $hostPrepText = [IO.File]::ReadAllText($hostPrepScript)
+    Assert-True ($hostPrepText.Contains('gateway-tls-cert')) 'configure-windows-host.ps1 is missing gateway-tls-cert readiness check.'
+    Assert-True ($hostPrepText.Contains('postgres-xid-headroom')) 'configure-windows-host.ps1 is missing postgres-xid-headroom advisory check.'
+    Assert-True ($hostPrepText.Contains('$xidSql | & docker exec -i $pgCid sh -c')) 'configure-windows-host.ps1 must pipe XID SQL via stdin so PowerShell 5.1 native argument quoting cannot strip embedded quotes.'
+    Assert-True (-not $hostPrepText.Contains('cat /run/secrets/')) 'configure-windows-host.ps1 must not invoke GNU cat on /run/secrets/ under Docker Desktop WSL 2 9p; use POSIX shell read -r instead.'
+    Assert-True ($hostPrepText.Contains('IFS= read -r PGPASSWORD < /run/secrets/postgres_bootstrap_password')) 'configure-windows-host.ps1 must read postgres_bootstrap_password via POSIX built-in read -r.'
 
     Write-Host 'OSCAR Windows PowerShell 5.1 storage safety tests passed.' -ForegroundColor Green
 } finally {

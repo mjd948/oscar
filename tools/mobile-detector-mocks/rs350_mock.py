@@ -7,8 +7,8 @@ a TCP *server* that, once the OSCAR node's driver connects, pushes one
 ANSI N42.42 (2011) XML document per second, framed as STX(0x02) <xml> ETX(0x03).
 The driver never writes; there is no handshake, ACK, or CRC.
 
-A simulated walker follows a waypoint route (default: Arlington National
-Cemetery gate loop). Radiation counts are Poisson background plus 1/r^2
+A simulated walker follows a waypoint route (default: a synthetic 1.2 km
+loop near Oak Ridge, TN). Radiation counts are Poisson background plus 1/r^2
 contributions from configurable hotspots; while the expected count rate
 exceeds background*alarm_factor the documents also carry the alarm blocks
 (<DerivedData> + <AnalysisResults><RadAlarm>), which is what the driver
@@ -41,21 +41,21 @@ DEFAULT_CONFIG = {
     "background_neutron_cps": 0.4,
     "alarm_factor": 1.6,
     "background_block_every_s": 30,
-    # Loop: Memorial Ave gate -> AFM gate -> Selfridge gate -> Marshall gate
+    # A 1.2 km synthetic loop of eight waypoints; the hotspots sit on two of them.
     "route": [
-        [38.88340, -77.06653],
-        [38.87890, -77.06580],
-        [38.87310, -77.06520],
-        [38.86782, -77.06666],
-        [38.86940, -77.07230],
-        [38.87678, -77.07849],
-        [38.88210, -77.07360],
-        [38.88773, -77.06768],
-        [38.88560, -77.06600],
+        [35.93000, -84.30334],
+        [35.93381, -84.30529],
+        [35.93539, -84.31000],
+        [35.93381, -84.31471],
+        [35.93000, -84.31666],
+        [35.92619, -84.31471],
+        [35.92461, -84.31000],
+        [35.92619, -84.30529],
+        [35.93000, -84.30334],
     ],
     "hotspots": [
-        {"lat": 38.87310, "lon": -77.06520, "intensity_cps_at_1m": 90000.0, "isotope": "Cs-137"},
-        {"lat": 38.87678, "lon": -77.07849, "intensity_cps_at_1m": 60000.0, "isotope": "Co-60"},
+        {"lat": 35.93539, "lon": -84.31000, "intensity_cps_at_1m": 90000.0, "isotope": "Cs-137"},
+        {"lat": 35.92619, "lon": -84.31471, "intensity_cps_at_1m": 60000.0, "isotope": "Co-60"},
     ],
 }
 
