@@ -18,7 +18,7 @@ LIB_DIR=/usr/local/lib/oscar-nightly
 STATE_DIR=/var/lib/oscar-nightly
 LOG_ROOT=/var/log/oscar-nightly
 CHECKOUT=/root/oscar-nightly
-DISK_MAX_PCT=75
+DISK_MAX_PCT=65   # ORNL 3.12 prunes alarm media from 75%; a build + rehearsal needs ~10 GB
 CLAUDE_TIMEOUT=6h
 MAINTENANCE_LOCK=/run/oscar-maintenance.lock   # touch this to make the job skip a night
 

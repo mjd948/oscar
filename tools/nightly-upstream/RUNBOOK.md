@@ -3,6 +3,11 @@
 Goal: bring ORNL release `RELEASE_TAG` into our `ornl-3.11-rollin` branches. Test it, build it,
 rehearse it beside live, deploy it, and roll back if live is not healthy. Then report.
 
+The branch keeps its old name, but it follows ORNL's current line (3.12 and later). Since the
+2026-11-28 re-sync it equals ORNL plus our tools and a few **fork-first** changes: our own fixes
+and features that the user is testing on live before they become ORNL PRs. They live on topic
+branches (`fix/*`, `feat/*`, based on ORNL `main`) merged into rollin. See the README.
+
 The person who reads your summary is not a developer. Write `summary.md` in plain language:
 what changed for them, what was done, and whether they need to do anything.
 
@@ -16,6 +21,11 @@ what changed for them, what was done, and whether they need to do anything.
   admin password, `.env` secrets, and `/srv/oscar-3.5-archive`. Never delete a release dir that
   live or the rollback target uses.
 - Never adjudicate alarms or change lanes or users on live. Live checks are read-only.
+- **Never start an older release dir on volumes a newer release has run on.** From 3.12 on, an
+  upgrade rewrites storage routing in PostgreSQL. An older release on those volumes fails every
+  write batch (log: `cannot change between mutable and immutable`), and ingest stops on all
+  lanes. Roll back by restoring the cold snapshot taken just before the upgrade
+  (`tools/live-upgrade/state-snapshot.sh`, steps 5 and 6).
 - Never point a rehearsal or scratch node at the site's real detector ports (10.235.20.94); live
   is connected to them. Rehearsals use the local mocks.
 - **The host has 8 GB of RAM, shared with live.** Use gradle `-Xmx2g --max-workers=2`, a dind
@@ -81,6 +91,11 @@ what changed for them, what was done, and whether they need to do anything.
 
   Explain in plain words what clashed. Then stop.
 
+  A conflict in a file that one of our fork-first branches touches usually means ORNL changed
+  the same code, or took our PR in its own form. Name the fork-first branch
+  (`git branch -r --contains <our commit>` on `my-fork`). Say whether ORNL's release notes mention
+  the same fix, so the user can decide whether to drop ours.
+
 ### 2. Merge (no conflicts)
 - In osh-core, modules and the viewer:
   `git merge --no-ff <ornl side> -m "Merge ORNL <ver> (<repo> <short sha>) into ornl-3.11-rollin"`.
@@ -135,10 +150,11 @@ what changed for them, what was done, and whether they need to do anything.
   and write its `.sha256` next to it.
 
 ### 5. Rehearse in dind (mandatory; it caught the 3.11.15 regression)
-Check `df` first: you need about 10 GB free and must stay under 80%. Follow the "Rehearsing beside
+Check `df` first: you need about 10 GB free and must stay under 65%. ORNL starts pruning alarm media at 75%. Follow the "Rehearsing beside
 live" recipe in memory `oscar-live-node-3-11.md`:
 1. Start a privileged `docker:27-dind` container with `--memory 3500m`. Bind-mount the rehearsal
-   dir `/opt/oscar-nightly-rehearsal` at the same path.
+   dir `/opt/oscar-nightly-rehearsal` at the same path, and the repo's `tools/live-upgrade` dir
+   read-only. Add `tar` (GNU tar, for `--numeric-owner`) to the recipe's `apk add` list.
 2. Copy the live `config.json` read-only. Rewrite the RPM `remoteHost` entries (ports
    10100–10103/10110/10111) and the `lastSyncedEndpoint` markers to `172.17.0.1`.
 3. Start the mocks on the host with `mockctl.sh`.
@@ -147,11 +163,21 @@ live" recipe in memory `oscar-live-node-3-11.md`:
    passes.
    **Every rehearsal check must set `OSCAR_BASE=https://<dind IP>` explicitly**, e.g.
    `https://172.17.0.2`. The harness default and the site hostname both reach live.
-5. Upgrade to the new zip with `oscar.sh upgrade`. Then run `acceptance.mjs` (portal lanes:
-   "Marshall,AFM Gate,Selfridge,Memorial Ave"; mobile: "Patrol 1", including GPS) and
-   `check-event-log-paging.mjs`, and look for new ERROR lines in the logs.
+5. Upgrade to the new zip **exactly as step 6 does on live**: prepare the new dir, pre-build,
+   `oscar.sh stop` in the old dir, `state-snapshot.sh take` (inside dind: `docker exec <dind>
+   bash /…/state-snapshot.sh take … --archive-dir <rehearsal OSCAR_ARCHIVE_DIR>`), then
+   `oscar.sh upgrade` in the new dir. Then:
+   - run `acceptance.mjs` (portal lanes "Marshall,AFM Gate,Selfridge,Memorial Ave"; mobile
+     "Patrol 1", including GPS) and `check-event-log-paging.mjs`;
+   - look for new ERROR lines in the logs.
    - Known and harmless: one `OccupancyProcessInterface` null-datablock NPE after start.
-6. Roll back to the baseline (`stop` the new, `start` the old). Check that it's healthy.
+6. Roll back the way live would:
+   1. `oscar.sh stop` in the new dir;
+   2. `state-snapshot.sh restore` with the same arguments;
+   3. `oscar.sh start` in the old dir.
+
+   Check that it's healthy, that occupancies are recorded again, and that the logs have no
+   `cannot change between mutable and immutable`.
 7. **Clean up whatever the result:** remove the dind container, its volumes and
    `/opt/oscar-nightly-rehearsal`. They hold live account data and use about 6 GB. Stop the mocks
    you started.
@@ -166,11 +192,32 @@ A failure here means `tests-failed`. If NO_DEPLOY=1, stop after the cleanup with
    `oscar-postgis:<ver>` images as `:<live release name minus the v>`, e.g. `:3.11.15-mjd948.1`.
    A new version gets new image tags by itself.
 3. Unzip to a temp dir, then move it to `/opt/oscar/oscar-<ver>-mjd948.N`.
-4. Copy over `.env`, `secrets/`, `tls/` and `.oscar-volume-adoption` (if present) from the live
-   dir. Keep `OSCAR_GUI_UPDATE=disabled`, the heap `-Xmx4g` and backups as they were. Diff the new
-   `.env.example` against the old one, and carry over any new keys with ORNL's defaults.
-5. Run `bash oscar.sh upgrade` in the new dir. Log the start and end times.
-6. Repoint the systemd units that hardcode the release path at the new dir:
+4. **Prepare the new dir's `.env`:**
+   - Copy over `.env`, `secrets/`, `tls/` and `.oscar-volume-adoption` (if present) from the
+     live dir.
+   - Keep `OSCAR_GUI_UPDATE=disabled`, the heap `-Xmx4g` and backups as they were.
+   - Diff the new `.env.example` against the old one, and carry over any new keys with ORNL's
+     defaults.
+   - **`OSCAR_JAVA_OPTS` is a carried key, so ORNL's flag changes never arrive by themselves.**
+     Add every flag in the new `.env.example`'s `OSCAR_JAVA_OPTS` that ours lacks, keeping our
+     `-Xms`/`-Xmx`. For 3.12.2 that is `-XX:G1PeriodicGCInterval=300000
+     -XX:+G1PeriodicGCInvokesConcurrent -XX:MinHeapFreeRatio=15 -XX:MaxHeapFreeRatio=35`.
+   - Set `OSCAR_VERSION=<ver>` in the new `.env` now, before any build. With the copied old
+     version, a build would overwrite live's image tags.
+5. **Pre-build the images while live still serves:** in the new dir, run
+   `docker compose --project-name oscar --env-file .env --file compose.yaml build oscar postgres`.
+   It only builds `oscar:<ver>` / `oscar-postgis:<ver>`, so the upgrade's own build is cached.
+6. **Save `config.json` separately:** copy it out of the volume, read-only, with
+   `docker run --rm --network none -v oscar_oscar_state:/v:ro --entrypoint cat oscar:<live ver> /v/config.json`
+   into `/opt/oscar/snapshots/config.json.pre-<release>` (mode 600). The `.bak` rotation is now
+   capped at 25.
+7. **Stop, snapshot, upgrade** (this is the downtime; log each start and end time):
+   1. `bash oscar.sh stop` in the live dir;
+   2. `bash tools/live-upgrade/state-snapshot.sh take /opt/oscar/snapshots/pre-<release> --archive-dir <OSCAR_ARCHIVE_DIR from .env>`;
+   3. `bash oscar.sh upgrade` in the new dir.
+
+   If the snapshot fails, run `oscar.sh start` in the live dir again and stop with `error`.
+8. Repoint the systemd units that hardcode the release path at the new dir:
    `grep -l /opt/oscar/oscar- /etc/systemd/system/*.service`. Today those are
    `oscar-sandbox-agent` and `oscar-usb-backup-status`. Then `systemctl daemon-reload`.
 
@@ -183,15 +230,23 @@ All of these must hold:
 - `bash oscar.sh archive verify` passes;
 - the portal lanes are online with video (`acceptance.mjs` against live is read-only; use it);
 - there's no crash or restart loop (`docker inspect` RestartCount is unchanged) and no flood of
-  new ERROR lines.
+  new ERROR lines;
+- `docker logs oscar-oscar-1` has no `cannot change between mutable and immutable`.
 
 A lane that was already offline before the deploy, because its site simulator was down, isn't a
 failure. Compare against `LIVE_BEFORE` and the pre-deploy lane states you recorded.
 
-**If the gate fails, roll back.** Run `bash oscar.sh stop` in the new dir. If step 6.2 re-tagged
-images, put the old tags back. Run `bash oscar.sh start` in the previous live dir, point the
-systemd units back, and re-check health. Status: `rolled-back`. Don't push the merge. Explain what
-failed. Keep the new dir for diagnosis, but delete its images if disk is above 75%.
+**If the gate fails, roll back.**
+1. Run `bash oscar.sh stop` in the new dir.
+2. Run `bash tools/live-upgrade/state-snapshot.sh restore /opt/oscar/snapshots/pre-<release> --archive-dir <OSCAR_ARCHIVE_DIR>`.
+   Never skip the restore: the old release on the upgraded volumes stops ingesting.
+3. If step 6.2 re-tagged images, put the old tags back.
+4. Run `bash oscar.sh start` in the previous live dir, point the systemd units back, and
+   re-check health.
+
+Status: `rolled-back`. Don't push the merge. Explain what failed. Keep the new dir for diagnosis,
+but delete its images if disk is above 65%. The restore leaves the upgraded data in
+`*.pre-restore-<time>` beside each path; leave it for a human.
 
 ### 8. Record and push (only after a passed gate)
 - Add a section to `LIVE_UPGRADE_PLAN.md` in the style of the previous ones: what merged, the
@@ -208,16 +263,20 @@ failed. Keep the new dir for diagnosis, but delete its images if disk is above 7
   - `docker builder prune -f`
   - keep the newest 3 `/opt/oscar/oscar-*` release dirs (live plus 2 rollbacks) and their image
     tags; remove older release dirs and their `oscar:`/`oscar-postgis:` image tags
+  - keep the 2 newest `/opt/oscar/snapshots/pre-*` snapshots (and their `config.json.pre-*`);
+    remove older ones. A snapshot is the only way back past its release, so never remove the
+    newest.
   - never remove `/opt/oscar/oscar-storage`
   - keep the 3 newest zips in `build/distributions`
 
 ### 9. Summary (`summary.md`, plain language, under about 60 lines)
 1. One line: the result. For example, "OSCAR was updated to ORNL 3.11.16 and is running normally."
 2. What ORNL changed, in user terms, from the release notes. Say whether any of our open upstream
-   PRs were merged: modules#57, viewer#49, viewer#50, oscar#76 and modules#60 (check with
-   `gh pr view -R ORNL/<repo> <n> --json state`).
+   PRs were merged (`gh pr list -R ORNL/<repo> --author mjd948 --state all` for oscar,
+   oscar-viewer, osh-oakridge-modules and osh-core). Also say whether the release now contains
+   one of our fork-first changes in ORNL's own form.
 3. Tests: counts passed and failed, plus anything allowlisted.
 4. The rehearsal result, and the live result with the downtime in seconds.
 5. Anything to look at. If something went wrong or needs a decision: what happened, what state
    things are in now, and what the options are.
-6. The rollback command, in one line.
+6. The rollback, in one line: stop, restore the snapshot, start the old dir.

@@ -23,17 +23,3 @@ export async function laneStates(page) {
   return page.$$eval('[data-testid^="lane-health-"][data-state]', els => Object.fromEntries(els.map(e => [e.dataset.testid.replace('lane-health-', ''), e.dataset.state])));
 }
 
-// Widget dashboards live at /dashboard/?name=<slug>, the slug made from the dashboard's name
-// (MainPages.ts slugify); a clashing name gets -2, -3, ...
-export const slugOf = name => name.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '') || 'dashboard';
-export const dashboardName = page => {
-  const u = new URL(page.url());
-  return u.pathname.replace(/\/+$/, '') === '/dashboard' ? u.searchParams.get('name') : null;
-};
-/** Wait for the dashboard called `name` (or its -2, -3 ... twin) to be the open page. */
-export const waitForDashboard = (page, name, timeout = 30000) => {
-  const slug = slugOf(name);
-  return page.waitForURL(u => u.pathname.replace(/\/+$/, '') === '/dashboard'
-    && new RegExp(`^${slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(-\\d+)?$`, 'u').test(u.searchParams.get('name') ?? ''), { timeout })
-    .then(() => true, () => false);
-};
