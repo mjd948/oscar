@@ -3,7 +3,8 @@
 D=${MOCK_STATE_DIR:-/tmp/oscar-mocks}; mkdir -p "$D"
 M=$(cd "$(dirname "${BASH_SOURCE[0]}")/../mobile-detector-mocks" && pwd)
 case $2 in
-  rs350) cmd=(python3 -I $M/rs350_mock.py --port 10110) ;;
+  # Our site's loop (near the portal lanes), so walker movement shows on a map fitted to the lanes.
+  rs350) cmd=(python3 -I $M/rs350_mock.py --port 10110 --config $M/site-loop.json) ;;
   d5) cmd=(python3 -I $M/d5_mock.py --port 10111) ;;
   rapiscan10100) cmd=(python3 -I $M/rapiscan_mock.py --port 10100 --occ-every 45) ;;
   rapiscan10101) cmd=(python3 -I $M/rapiscan_mock.py --port 10101 --occ-every 60 --first-occ 30) ;;

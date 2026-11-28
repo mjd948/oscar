@@ -662,3 +662,58 @@ when the detector comes back.
 Rollback: `bash oscar.sh stop` in `/opt/oscar/oscar-3.11.15-mjd948.1`, then `bash oscar.sh start`
 in `/opt/oscar/oscar-3.11.11-mjd948.5` (images `oscar:3.11.11` / `oscar-postgis:3.11.11`, also
 tagged `:3.11.11-mjd948.5`). Older fallback: `/opt/oscar/oscar-3.11.11-mjd948.4`.
+
+## Update to 3.12.2 (re-sync to ORNL): plan and rehearsal (2026-11-28)
+
+ORNL 3.12.0–3.12.2 rebuilt our mobile-detector and widget-dashboard work its own way (our PRs
+modules#57, viewer#49/#50 and oscar#76 were closed, credited as co-authored), so the nightly job
+stopped on 3.12.1 with 108 conflicts. Every one of our fixes was already in ORNL, so the
+rollin branches were **re-synced to ORNL**: all conflicts take ORNL's side and our dashboard layer
+is dropped (user decision: ORNL's `/dashboards`, start fresh).
+- **Pins:** parent `0d7dc0b`+, osh-core `9369a4af` (tree = ORNL `3cbb901a`), osh-addons
+  `80c37a08`, modules `9d734ef1` (ORNL `cfdff1e7` + one D5 test), viewer `afad809` (ORNL
+  `8019a830` + one lane-health test + the fork-first fix `fix/rs350-summary-card-counts`),
+  video-guides `b3b2d145`.
+- **Release:** `oscar-3.12.2-mjd948.1.zip`, SHA-256 `714299c8aaa56bf3…`.
+- **Checks before the build:**
+  - viewer: tsc, 353/353 component tests, build;
+  - release metadata;
+  - gradle: lane, RS-350, D5, session, webui, OSCAR service, bucket, journal and OCR (680);
+  - osh-core (37);
+  - PostGIS 273 against a 3.12.2 test DB, failing only the 8 known ones plus one knock-on that
+    passes alone;
+  - RAD utils, consys, hivemq, aspect, ffmpeg, rapiscan.
+
+**Rollback is a one-way door from 3.12 on.** 3.12 marks the RS-350 `alarm`/`location` streams
+archive-only in PostgreSQL; 3.11.15 started on those volumes reports **healthy** but fails every
+write batch ("Datastream 8 cannot change between mutable and immutable storage classes") and
+records nothing on any lane. Rollback = stop, restore the cold snapshot taken just before the
+upgrade (`tools/live-upgrade/state-snapshot.sh`), start the old dir.
+
+**Rehearsal** (dind, live `config.json` with RPMs on host simulators; the RS-350 simulator now
+walks our site loop via `site-loop.json`):
+
+| step | result | time |
+|---|---|---|
+| baseline 3.11.15-mjd948.1 | acceptance passes (4 portal lanes with video, Patrol 1 moving) | |
+| capture the old viewer's saved dashboards | 10 pages incl. a user-made one | |
+| prepare 3.12.2 dir (`merge-env.py`: version + G1 flags, heap kept), pre-build | baseline untouched | 28 s |
+| stop, snapshot, `oscar.sh upgrade` | healthy on 3.12.2 | 6 s + 0 s (132 MB) + 55 s |
+| acceptance | pass, incl. Patrol 1 GPS and moving walker | |
+| `check-event-log-paging`, `archive verify`, `check-gateway-routes` | pass (29/29) | |
+| `check-dashboards` with the old saved state | `/dashboards` renders, home is ORNL's Dashboard, no page errors | |
+| Patrol 1 mobile card | Gamma 1,230 Counts, Neutron 1 Counts (the fork-first fix) | |
+| server log | 0 ERROR; pre-existing "Could not attach WebID Analysis to RS350" warning, same as baseline | |
+| occupancy history | all pre-upgrade occupancies present on all 4 portal lanes, new ones arriving | |
+| **control:** start 3.11.15 on the upgraded volumes without restore | healthy, but 164 storage errors in 2 min and **0 occupancies recorded** | |
+| **rollback:** stop, `state-snapshot.sh restore`, start 3.11.15 | healthy, 0 errors, history intact, occupancies recorded again | 6 s + 0 s + 58 s |
+
+Harness changes found by the rehearsal: since 3.12.2 a Basic request within 30 s of an earlier
+one is served from ORNL's credential cache without a new session cookie, so
+`check-gateway-routes.sh` now signs in through the login form.
+
+**Live procedure (waiting for the user's go):** `/opt/oscar/oscar-3.12.2-mjd948.1` from the zip,
+copy `.env`/`secrets/`/`tls/`, `merge-env.py`, pre-build, copy `config.json` out, then stop live,
+`state-snapshot.sh take /opt/oscar/snapshots/pre-3.12.2 --archive-dir /opt/oscar/oscar-storage/archive`
+(about 1.9 GB), `oscar.sh upgrade`, repoint the sandbox-agent / usb-backup-status units. Expected
+outage about 1.5–3 min.

@@ -201,14 +201,14 @@ A failure here means `tests-failed`. If NO_DEPLOY=1, stop after the cleanup with
    - Copy over `.env`, `secrets/`, `tls/` and `.oscar-volume-adoption` (if present) from the
      live dir.
    - Keep `OSCAR_GUI_UPDATE=disabled`, the heap `-Xmx4g` and backups as they were.
-   - Diff the new `.env.example` against the old one, and carry over any new keys with ORNL's
-     defaults.
-   - **`OSCAR_JAVA_OPTS` is a carried key, so ORNL's flag changes never arrive by themselves.**
-     Add every flag in the new `.env.example`'s `OSCAR_JAVA_OPTS` that ours lacks, keeping our
-     `-Xms`/`-Xmx`. For 3.12.2 that is `-XX:G1PeriodicGCInterval=300000
-     -XX:+G1PeriodicGCInvokesConcurrent -XX:MinHeapFreeRatio=15 -XX:MaxHeapFreeRatio=35`.
-   - Set `OSCAR_VERSION=<ver>` in the new `.env` now, before any build. With the copied old
-     version, a build would overwrite live's image tags.
+   - Run `python3 -I tools/live-upgrade/merge-env.py <new dir>/.env <new dir>/.env.example`
+     **before any build**. It:
+     - sets `OSCAR_VERSION=<ver>`; with the copied old version, a build would overwrite live's
+       image tags;
+     - adds every flag of ORNL's new `OSCAR_JAVA_OPTS` that ours lacks, keeping our
+       `-Xms`/`-Xmx`; `OSCAR_JAVA_OPTS` is a carried key, so ORNL's flag changes never arrive by
+       themselves;
+     - lists `.env.example` keys missing from `.env`. Carry those over with ORNL's defaults.
 5. **Pre-build the images while live still serves:** in the new dir, run
    `docker compose --project-name oscar --env-file .env --file compose.yaml build oscar postgres`.
    It only builds `oscar:<ver>` / `oscar-postgis:<ver>`, so the upgrade's own build is cached.
