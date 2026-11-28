@@ -712,8 +712,25 @@ Harness changes found by the rehearsal: since 3.12.2 a Basic request within 30 s
 one is served from ORNL's credential cache without a new session cookie, so
 `check-gateway-routes.sh` now signs in through the login form.
 
-**Live procedure (waiting for the user's go):** `/opt/oscar/oscar-3.12.2-mjd948.1` from the zip,
-copy `.env`/`secrets/`/`tls/`, `merge-env.py`, pre-build, copy `config.json` out, then stop live,
-`state-snapshot.sh take /opt/oscar/snapshots/pre-3.12.2 --archive-dir /opt/oscar/oscar-storage/archive`
-(about 1.9 GB), `oscar.sh upgrade`, repoint the sandbox-agent / usb-backup-status units. Expected
-outage about 1.5–3 min.
+**Live (2026-11-28, user's go):** `/opt/oscar/oscar-3.12.2-mjd948.1` from the zip (SHA-256 checked),
+`.env`/`secrets/`/`tls/` copied, `merge-env.py` (3.12.2, G1 flags, `-Xmx4g` kept), images pre-built
+beside live (50 s), `config.json` copied to `/opt/oscar/snapshots/config.json.pre-3.12.2-mjd948.1`.
+Outage 14:52:06–14:55:04 UTC (178 s): `oscar.sh stop` 6 s, snapshot
+`/opt/oscar/snapshots/pre-3.12.2` 11 s (1.8 GB), `oscar.sh upgrade` 161 s (the site's RS-350 at
+10110 is still off, which slows the start). The upgrade re-pointed the usb-backup and sandbox agents
+itself.
+
+Health gate: all three containers healthy, 0 restarts; acceptance passes (4 portal lanes online with
+video); `check-event-log-paging`, `check-gateway-routes` 29/29, `check-dashboards` and `archive
+verify` pass; 0 "mutable and immutable" errors. The only ERROR lines are Patrol 1's RPM retrying its
+offline site simulator every 30 s, the same as on 3.11.15 since 2026-11-25. Occupancy history intact
+(hundreds per portal lane since Nov 27) and new occupancies arriving after the upgrade.
+
+**Rollback** (only together with the snapshot; anything recorded on 3.12.2 since 14:55 is lost):
+```bash
+cd /opt/oscar/oscar-3.12.2-mjd948.1 && bash oscar.sh stop
+bash /root/osh-oakridge-buildnode/tools/live-upgrade/state-snapshot.sh restore /opt/oscar/snapshots/pre-3.12.2 --archive-dir /opt/oscar/oscar-storage/archive
+cd /opt/oscar/oscar-3.11.15-mjd948.1 && bash oscar.sh start
+```
+Then point the usb-backup / sandbox agent units back at the 3.11.15 dir. Never start the 3.11.15 dir
+without the restore: it reports healthy but records nothing.
