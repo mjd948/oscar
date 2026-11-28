@@ -138,6 +138,11 @@ what changed for them, what was done, and whether they need to do anything.
       `staleCleanupFailurePreventsSessionAdmissionUntilCleanupCanSucceed`
     - `TestParquetArchiveReader`: `cursorCloseReportsSpillCleanupFailure`,
       `decodingFailureKeepsCleanupFailureSuppressed`
+  - **Knock-on of the root-only failures (v3.12.2, proven 2026-11-28):**
+    `TestDuckDbResourcePolicy > backgroundOperationDoesNotConsumeLastPermitWhileArchiveExportIsActive`
+    fails with "DuckDB session capacity is busy", because the root-only tests above leave DuckDB
+    permits held in the same JVM. It passes when run on its own (`--tests <that one>`). If it ever
+    fails alone, it is a real failure.
 
     Mention them in one line, not as a finding. A new upstream-only failure can be allowlisted only if it fails
   identically on a clean ORNL checkout of `RELEASE_TAG`. Prove it, and note it in the summary.

@@ -3,7 +3,9 @@ import fs from 'node:fs';
 export const BASE = process.env.OSCAR_BASE ?? 'https://oscar-scratch.local';
 const PW = fs.readFileSync(process.env.PW_FILE, 'utf8').trim();
 export async function open() {
-  const browser = await chromium.launch({ headless: true });
+  // PW_RESOLVE="MAP <site hostname> <rehearsal ip>" sends the site hostname (which the gateway's
+  // certificate and server_name expect) to a rehearsal stack instead of live.
+  const browser = await chromium.launch({ headless: true, args: process.env.PW_RESOLVE ? [`--host-resolver-rules=${process.env.PW_RESOLVE}`] : [] });
   const context = await browser.newContext({ ignoreHTTPSErrors: true, httpCredentials: { username: 'admin', password: PW }, viewport: { width: 1600, height: 1000 }, locale: 'en-US' });
   const page = await context.newPage();
   const errors = [];
